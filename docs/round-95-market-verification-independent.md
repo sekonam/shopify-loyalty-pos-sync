@@ -98,6 +98,31 @@ The nearest concrete competitive threat is Joy's already-shipped (marketing) cla
 Growave/Rivo as under-tracked mid-size players worth a feature check before finalizing
 positioning — not evidence of an incumbent fix in flight.
 
+## 7. Cross-check against a third, independently-run pass (same day)
+
+A separate research pass ran in parallel to this round, without visibility into it, searching the
+same category from a different angle (general web search rather than direct `apps.shopify.com`
+category-page pagination). It converged on Rivo and Growave independently (good corroboration —
+two independent methods found the same two mid-size players) and additionally surfaced:
+
+- **Love Loyalty Points & Rewards** — 358 reviews, 5.0★, marketed as built "exclusively for
+  Shopify" with "full POS support for online and offline redemption." Smaller than Rivo/Growave but
+  the most direct marketing-claim match to this app's own wedge language — worth a hands-on check
+  alongside Joy (§3 above) before finalizing "no incumbent solves this" positioning.
+- **YOYO: Loyalty, VIP, Membership** (173 reviews, 5.0★) and **CWILL Loyalty & Referrals** (817
+  reviews, 4.9★) — smaller players, not yet feature-checked either way.
+- **Marsello** — markets POS integration heavily, but is Lightspeed/Clover-POS-centric, not native
+  Shopify POS. Its 1-3★ reviews describe Lightspeed integration friction, not Shopify-POS
+  balance-sync bugs. Likely not a true substitute for this app's specific wedge — worth confirming
+  before treating it as a competitor at all, but a useful negative data point either way.
+- **Confirms this round's §4 finding independently**: "Shopify POS doesn't have built-in loyalty
+  tools" — no native-platform risk, found by two independent searches.
+
+Net effect: doesn't change the concentration read, but **widens the pre-listing-copy check list**
+beyond Joy alone — Love Loyalty's marketing claim in particular reads as close enough to this app's
+own positioning that it should be checked hands-on in the same pass as Joy, not treated as a lower
+priority just because its review count is smaller.
+
 ## Net effect on round 94's conclusions
 
 - Review counts, pricing, and the four-app concentration read: **confirmed**, no material

@@ -271,9 +271,10 @@ advantage over WooCommerce's flat-pricing ceiling.
 
 **Spikes, in priority order (the riskiest unknowns first, per PLAYBOOK Stage 2):**
 0. **Added round 95, ahead of everything else because it's cheap and gates the positioning claim:**
-   install Joy Loyalty (and re-check Appstle) on a throwaway dev store, exercise POS earn +
-   redeem, and confirm whether Joy's marketed "POS loyalty extension (in-store rewards)" actually
-   works reliably. Round 95 found this claim exists in Joy's marketing but neither round tested it
+   install Joy Loyalty and Love Loyalty Points & Rewards (and re-check Appstle) on a throwaway dev
+   store, exercise POS earn + redeem, and confirm whether their marketed in-store/POS redemption
+   claims actually work reliably. Round 95 (and its §7 cross-check against a parallel independent
+   pass) found both apps market this claim directly but no research pass has tested either
    hands-on — see `round-95-market-verification-independent.md`. Blocks any listing copy or
    outreach message asserting "no incumbent solves this."
 1. **Confirmed this round, not a spike any more:** can a POS UI extension read/write a

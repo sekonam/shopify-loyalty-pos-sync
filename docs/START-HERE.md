@@ -7,6 +7,15 @@ research and a passed kill test (see `PRODUCT-SPEC.md`), but no code exists, no 
 account has been created for this app, and — the single largest open risk — **no real customer
 has confirmed they'd pay for this.**
 
+## 0. One cheap check to run alongside the outreach below (round 95, 2026-09-18)
+
+Before sending the outreach in step 1, install Joy Loyalty on a throwaway dev store and test its
+marketed "POS loyalty extension (in-store rewards)" hands-on. Round 95's independent market
+re-check found Joy already advertises this feature, untested by any research pass so far — see
+`PRODUCT-SPEC.md`'s spike 0 and `round-95-market-verification-independent.md`. It doesn't change
+the outreach question below (the three reviewers are already stuck on Appstle/BON specifically),
+but it matters before any messaging claims "no loyalty app solves this" more broadly.
+
 ## 1. The one thing that has to happen before any build spend
 
 Contact the specific, dated, named reviewers who are still stuck on a competitor's broken

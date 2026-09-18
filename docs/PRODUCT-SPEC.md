@@ -142,6 +142,15 @@ figure cited in round 88: 258 genuinely loyalty-shaped apps, 111 of them with ze
 | Appstle Loyalty Program Reward | 1,368 | Free / $10 / $30 / $100/mo, order-volume-gated | **POS redemption stopped working outright**, 3-day outage, scripted support, 48hr-quoted SLA even after escalation (2026, dated, sharpened this round); theme/CSS ID conflicts (2025, dated); broken loyalty-list migration (2024, dated) |
 | **Kangaroo: Loyalty and Rewards** | 55 | **$199/mo flat, no free tier** | The "won small" existence proof — reviewers explicitly praise POS reliability across 5-7+ year tenures, the opposite experience from the three leaders above |
 
+*Round 95 (2026-09-18, independent re-verification) added two more mid-size competitors not
+tracked above: **Rivo** (1,386 reviews, 4.8★, $0/$15/$49/$499/mo) and **Growave** (1,226 reviews,
+4.8★, loyalty+reviews+wishlist bundle, Built for Shopify certified). Neither changes the
+concentration read materially, but both are large enough to check directly in any future
+competitive listing-copy pass. Round 95 also found Joy Loyalty's $129/mo tier explicitly markets a
+"POS loyalty extension (in-store rewards)" with QR-code redemption — not hands-on tested by either
+round; see round-95's `docs/round-95-market-verification-independent.md` for why this needs a
+direct spike before any "no incumbent solves this" claim goes into listing copy or outreach.*
+
 **Price ceiling** (round 85): BON and Appstle both gate paid tiers on **monthly order volume**,
 not a flat SaaS fee — the Shopify analogue of Atlassian/monday's per-seat lever, reaching
 $100-129/mo before enterprise negotiation. Kangaroo prices its entire product at $199/mo flat.
@@ -261,6 +270,12 @@ pattern) rather than a flat SaaS fee, since the order-volume lever is this niche
 advantage over WooCommerce's flat-pricing ceiling.
 
 **Spikes, in priority order (the riskiest unknowns first, per PLAYBOOK Stage 2):**
+0. **Added round 95, ahead of everything else because it's cheap and gates the positioning claim:**
+   install Joy Loyalty (and re-check Appstle) on a throwaway dev store, exercise POS earn +
+   redeem, and confirm whether Joy's marketed "POS loyalty extension (in-store rewards)" actually
+   works reliably. Round 95 found this claim exists in Joy's marketing but neither round tested it
+   hands-on — see `round-95-market-verification-independent.md`. Blocks any listing copy or
+   outreach message asserting "no incumbent solves this."
 1. **Confirmed this round, not a spike any more:** can a POS UI extension read/write a
    backend-hosted loyalty balance and apply it as a live discount? **Yes — Shopify's own docs
    name this exact use case.** Retained here only to record that it moved from "spike" to
@@ -485,3 +500,8 @@ merchant with a POS."
 - `apps.shopify.com/smile-io/reviews`, `apps.shopify.com/bon-loyalty-rewards/reviews`,
   `apps.shopify.com/appstle-loyalty/reviews` (all `?ratings[]=1&2&3`) — fetched 2026-09-17,
   quotes attributed to named stores with dates as shown above.
+- `docs/round-95-market-verification-independent.md` (2026-09-18) — independent second-pass
+  verification of review counts/pricing (confirmed), two additional competitors found (Rivo,
+  Growave), Joy Loyalty's untested POS-extension marketing claim (new spike added above), four
+  additional community threads on the same POS-sync defect (demand signal strengthened), no
+  evidence of an incumbent fix in flight.

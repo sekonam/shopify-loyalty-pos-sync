@@ -158,6 +158,16 @@ targets, per Shopify's documented pattern for this exact use case):
 
 ## 7. Open questions to resolve during the spike phase, not before
 
+- **Whether v1 supports offline POS redemption at all.** §4-5 above describe the full
+  queue-while-offline, reject-on-reconnect-conflict design. `PRODUCT-PERSPECTIVES.md`'s second
+  addendum proposes a simpler v1: disable the redeem action outright whenever the POS extension
+  can't reach the backend live (show "balance last synced <time>" instead), deferring the
+  queue-and-reconcile flow to v1.x. The simpler option removes the single hardest-to-test line item
+  from v1 (it needs a real POS device deliberately taken offline to test the full version
+  credibly) without weakening the correctness claim — it never silently drifts, it just does less.
+  Decide this with a bias toward the simpler option unless a spike shows offline POS usage is
+  common enough at the target ICP to matter on day one. Not decided yet — pick one before building
+  the POS extension's offline-state handling, not after.
 - Exact GDPR redaction requirements for ledger rows (§2) — confirm against current
   `shopify.dev` docs, this is compliance-critical and platform requirements can change.
   Note that both round 94 and round 95 confirmed the current Shopify billing/review-process terms

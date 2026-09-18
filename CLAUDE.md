@@ -52,11 +52,12 @@ the whole product exists to avoid in incumbents:
   new row, never an UPDATE of a balance field.
 - **Every ledger entry is channel-tagged** (`sourceName`: `web` | `pos` | `mobile_app`), taken
   from the `Order` object, not inferred.
-- **Redemption writes must be atomic and reject-on-conflict**, not read-then-write. A POS terminal
-  that queued a redemption offline and reconnects after a second, later redemption already
-  cleared the balance must have its stale write rejected, with the POS surfacing "can't confirm
-  balance" rather than a stale number presented as live. This is the offline double-spend design
-  requirement `PRODUCT-SPEC.md` names as unresolved-until-implemented.
+- **Redemption writes must be atomic**, not read-then-write — this holds regardless of how offline
+  handling is scoped below. **How offline POS redemption itself is scoped is an open design
+  question, not settled** — see `docs/TECHNICAL-SPEC.md` §7 and `docs/PRODUCT-PERSPECTIVES.md` for
+  two live options (support queued-offline redemption with reject-on-reconnect-conflict, vs. the
+  simpler "disable redemption entirely while the POS can't reach the backend live"). Resolve this
+  during the spike phase with real data, don't default to the more complex option out of habit.
 - **Two front-end integration surfaces (checkout Function + POS extension), one backend.** Do not
   let either surface grow its own notion of balance or its own write path — every mutation goes
   through the shared ledger service.
@@ -91,10 +92,13 @@ to keep the wedge provable before general feature-building starts.
 
 ## MCP servers for this repo
 
-- **Shopify Dev MCP**, if/when configured (verify current package name and install command before
-  relying on it — Shopify's dev-tooling package names churn; don't hardcode a command from memory
-  into a script without checking `shopify.dev` first). Useful for schema-accurate GraphQL Admin
-  API queries and doc lookups without manual WebFetch round-trips once real implementation starts.
+- **Shopify Dev MCP** — verified against `shopify.dev/docs/apps/build/devmcp` on 2026-09-18:
+  `claude mcp add --transport stdio shopify-dev-mcp -- npx -y @shopify/dev-mcp@latest`. Runs
+  locally, no authentication required. Exposes developer-doc/API-schema lookup, GraphQL
+  query/Liquid/Extension code validation, and (via authenticated Shopify CLI) store management.
+  Add this before starting real implementation — it replaces manual `shopify.dev` WebFetch
+  round-trips with schema-accurate answers. Re-verify the command if it's been more than a few
+  months since 2026-09-18; this tooling is young enough to still be churning.
 - **GitHub**: Claude Code's built-in `gh` CLI access covers standard PR/issue workflows already —
   don't add a GitHub MCP server on top of that unless a specific gap shows up (e.g. needing
   structured PR review comment data an MCP server exposes that `gh api` doesn't conveniently).

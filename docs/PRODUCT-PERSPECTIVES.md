@@ -66,6 +66,18 @@ demand is too specific to ignore — but I'd hold the 11-14 week estimate loosel
 silently. If either breaks, the honest move is the re-scope the dossier already names (checkout-only
 v1, POS as v1.x), not quietly extending the timeline to force the original scope through.
 
+## Addendum (2026-09-18, after round 95)
+
+Round 95's independent re-check found one thing worth folding back into the paragraphs above:
+**Joy Loyalty already markets a POS loyalty extension**, untested by either research pass. This
+sharpens rather than undercuts the ASO-discovery skepticism above — if a cold-discovery merchant
+searches generically and lands on Joy first, a claim like "POS sync" isn't even a differentiator
+to them unless Joy's version is demonstrably worse, which is currently unverified. Spike 0 in
+`PRODUCT-SPEC.md` (install and POS-test Joy) isn't just a competitive-accuracy check anymore — it's
+load-bearing for the switcher-first GTM this doc argues for, since "here's specifically why we're
+different from Joy" is a much stronger design-partner pitch than "here's why we're different from
+the three apps you may not even be using."
+
 ## Net read
 
 I'd rate this a reasonable bet at the size the dossier proposes it at: cheap to falsify, evidence

@@ -11,7 +11,12 @@ plainly that "all the popular loyalty apps... fail to do this."
 > [`idea-lab`](../idea-lab)'s `ideas/15-shopify-loyalty-pos-sync.md` — a full dossier with the
 > kill test, competitor evidence, and technical spikes already run against Shopify's own docs.
 > `docs/PRODUCT-SPEC.md` is that dossier, copied in for reference. `docs/START-HERE.md` says what
-> it actually takes to start.
+> it actually takes to start. `docs/PRODUCT-PERSPECTIVES.md` is an independent second opinion on
+> the dossier — where it holds up and where the go-to-market read should change.
+> `docs/round-95-market-verification-independent.md` is a second-pass competitor/market re-check
+> (2026-09-18) that mostly confirms round 94 but found one real gap: Joy Loyalty already markets a
+> POS loyalty extension, untested by either round — see `PRODUCT-SPEC.md`'s spike list. `CLAUDE.md`
+> has the standing engineering/workflow rules for anyone (or any Claude session) picking this up.
 
 **Current score:** P(≥$1,000 MRR by month 12) ≈ 8-10% — passed a real kill test against primary
 evidence (three independent incumbents, one 7-month community thread) but has never had a

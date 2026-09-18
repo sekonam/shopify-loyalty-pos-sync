@@ -32,7 +32,8 @@ packages/shopify-backend  webhook ingestion (orders/paid, refunds/create, mandat
                            the authoritative service both extensions call
 apps/checkout-extension   Shopify Function (discount) + Checkout UI extension
 apps/pos-extension        POS UI extension, Customer Details target
-docs/                     PRODUCT-SPEC.md, START-HERE.md, PRODUCT-PERSPECTIVES.md, research rounds
+docs/                     PRODUCT-SPEC.md, START-HERE.md, PRODUCT-PERSPECTIVES.md,
+                          TECHNICAL-SPEC.md, research rounds (round-*.md)
 ```
 
 A pnpm workspace monorepo is the natural fit for this shape (shared TS types between the ledger
@@ -80,7 +81,7 @@ to keep the wedge provable before general feature-building starts.
 
 ## Tech stack notes
 
-- **GraphQl Admin API only.** REST is deprecated for new public-app submissions (enforced since
+- **GraphQL Admin API only.** REST is deprecated for new public-app submissions (enforced since
   April 2025 per the dossier). Don't scaffold against REST examples found in older tutorials.
 - **Shopify CLI (`@shopify/cli`)** is the standard scaffold/dev tool — `shopify app init`, `shopify
   app generate extension` for both the POS UI extension and the checkout Function. Confirm current

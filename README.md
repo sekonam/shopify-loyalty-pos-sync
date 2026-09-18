@@ -44,7 +44,8 @@ packages/ledger          the append-only points ledger — no platform dependenc
 packages/shopify-backend  webhook ingestion (orders/paid, refunds/create), the authoritative service
 apps/checkout-extension   Shopify Function (discount) + Checkout UI extension
 apps/pos-extension        POS UI extension, Customer Details target
-docs/                     PRODUCT-SPEC.md (the dossier), START-HERE.md, technical notes as spikes land
+docs/                     PRODUCT-SPEC.md (the dossier), START-HERE.md, TECHNICAL-SPEC.md (schema,
+                          webhook contracts, write path), PRODUCT-PERSPECTIVES.md, round-*.md
 ```
 
 Nothing under `packages/` or `apps/` exists yet — this is the intended shape, not the current

@@ -1,0 +1,45 @@
+/**
+ * Exact decimal arithmetic for money/rate math. Shopify sends amounts as decimal
+ * strings; multiplying them as floats can misround an earn calculation, so every
+ * computation here goes through scaled BigInt.
+ */
+
+const DECIMAL_RE = /^(-?)(\d+)(?:\.(\d+))?$/;
+
+export interface ScaledDecimal {
+  /** value * 10^-scale is the represented number */
+  value: bigint;
+  scale: number;
+}
+
+export function parseDecimal(input: string | number): ScaledDecimal {
+  const s = typeof input === 'number' ? String(input) : input.trim();
+  const m = DECIMAL_RE.exec(s);
+  if (!m) throw new Error(`Not a decimal: ${JSON.stringify(input)}`);
+  const [, sign, whole, frac = ''] = m;
+  const digits = (whole + frac).replace(/^0+(?=\d)/, '');
+  const value = BigInt(digits) * (sign === '-' ? -1n : 1n);
+  return { value, scale: frac.length };
+}
+
+/** floor(a * b) for non-negative decimals, as a plain integer. */
+export function floorProduct(a: string | number, b: string | number): number {
+  const da = parseDecimal(a);
+  const db = parseDecimal(b);
+  const product = da.value * db.value;
+  const divisor = 10n ** BigInt(da.scale + db.scale);
+  // BigInt division truncates toward zero == floor for non-negative products.
+  const floored = product >= 0n ? product / divisor : -((-product + divisor - 1n) / divisor);
+  if (floored > BigInt(Number.MAX_SAFE_INTEGER) || floored < BigInt(Number.MIN_SAFE_INTEGER)) {
+    throw new Error(`Result out of safe integer range: ${floored}`);
+  }
+  return Number(floored);
+}
+
+export function isNonNegativeDecimal(input: string | number): boolean {
+  try {
+    return parseDecimal(input).value >= 0n;
+  } catch {
+    return false;
+  }
+}

@@ -108,6 +108,8 @@ interface OrdersPaidPayload {
   test?: boolean;
   total_price?: string;
   customer?: { id?: number | string; admin_graphql_api_id?: string } | null;
+  note_attributes?: Array<{ name?: string; value?: string }>;
+  discount_applications?: unknown[];
 }
 
 async function handleOrdersPaid(
@@ -115,6 +117,7 @@ async function handleOrdersPaid(
   payload: unknown,
   deps: WebhookDeps,
 ): Promise<WebhookOutcome> {
+  const log = deps.log ?? (() => undefined);
   const order = payload as OrdersPaidPayload;
   if (order.id == null || typeof order.total_price !== 'string') {
     return { handled: false, reason: 'orders/paid payload missing id or total_price' };
@@ -125,6 +128,20 @@ async function handleOrdersPaid(
     (order.customer?.id != null ? customerGid(order.customer.id) : undefined);
   if (!customerId) return { handled: true, action: 'skipped order without customer' };
 
+  // Cross-check: a checkout that carried a loyalty redemption names its
+  // attempt in note_attributes. A missing/unapplied attempt means the
+  // discount Function was fed a hand-edited attribute — surface it loudly
+  // for the merchant ledger view; the earn below still proceeds normally.
+  const attemptAttr = (order.note_attributes ?? []).find((a) => a.name === 'loyalty_attempt');
+  let attemptWarning: string | undefined;
+  if (attemptAttr?.value) {
+    const attempt = await deps.ledger.getAttempt(shopDomain, attemptAttr.value);
+    if (!attempt || attempt.status !== 'applied') {
+      attemptWarning = `order ${order.id} claims loyalty attempt ${attemptAttr.value} but no applied redemption exists`;
+      log(attemptWarning, { shopDomain, orderId: order.id });
+    }
+  }
+
   const settings = await deps.settings.get(shopDomain);
   const draft = earnEntryFromOrder({
     shopDomain,
@@ -134,9 +151,13 @@ async function handleOrdersPaid(
     totalPrice: order.total_price,
     earnRate: settings.earnRate,
   });
-  if (!draft) return { handled: true, action: 'order earned zero points' };
+  const suffix = attemptWarning ? '; ATTEMPT MISMATCH logged' : '';
+  if (!draft) return { handled: true, action: `order earned zero points${suffix}` };
   const { inserted } = await deps.ledger.append(draft);
-  return { handled: true, action: inserted ? `earned ${draft.delta}` : 'earn already recorded' };
+  return {
+    handled: true,
+    action: (inserted ? `earned ${draft.delta}` : 'earn already recorded') + suffix,
+  };
 }
 
 interface RefundsCreatePayload {

@@ -52,6 +52,50 @@ describe('orders/paid', () => {
     expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(50);
   });
 
+  it('flags an order claiming a loyalty attempt that was never applied', async () => {
+    const deps = makeDeps();
+    const logged: string[] = [];
+    deps.log = (msg) => logged.push(msg);
+    const outcome = await deliver(
+      deps,
+      'orders/paid',
+      paidOrder({
+        note_attributes: [{ name: 'loyalty_attempt', value: 'ghost-attempt' }],
+      }),
+    );
+    expect(outcome).toMatchObject({ action: 'earned 50; ATTEMPT MISMATCH logged' });
+    expect(logged.some((m) => m.includes('ghost-attempt'))).toBe(true);
+  });
+
+  it('accepts an order whose loyalty attempt is a real applied redemption', async () => {
+    const deps = makeDeps();
+    await deliver(deps, 'orders/paid', paidOrder({ id: 1, admin_graphql_api_id: 'gid://shopify/Order/1' }));
+    const result = await deps.ledger.redeem({
+      shopDomain: SHOP,
+      customerId: CUSTOMER,
+      channel: 'web',
+      requestedPoints: 25,
+      minRedemption: 1,
+      attemptId: '22222222-2222-4222-8222-222222222222',
+    });
+    expect(result.status).toBe('applied');
+    const logged: string[] = [];
+    deps.log = (msg) => logged.push(msg);
+    const outcome = await deliver(
+      deps,
+      'orders/paid',
+      paidOrder({
+        id: 2,
+        admin_graphql_api_id: 'gid://shopify/Order/2',
+        note_attributes: [
+          { name: 'loyalty_attempt', value: '22222222-2222-4222-8222-222222222222' },
+        ],
+      }),
+    );
+    expect(outcome).toMatchObject({ action: 'earned 50' });
+    expect(logged).toHaveLength(0);
+  });
+
   it('tags unknown source names as other, preserving the raw value', async () => {
     const deps = makeDeps();
     await deliver(deps, 'orders/paid', paidOrder({ source_name: '755357713' }));

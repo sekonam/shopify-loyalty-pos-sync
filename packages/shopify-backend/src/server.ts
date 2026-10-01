@@ -8,6 +8,8 @@ import { PgReceiptStore } from './receipts.js';
 import { PgSettingsStore } from './settings.js';
 import { PgComplianceStore } from './compliance.js';
 import { createApp } from './routes.js';
+import { GraphqlAdminOrdersClient } from './admin-client.js';
+import { PgReconRunStore, startReconciliationLoop } from './scheduler.js';
 
 const config = configFromEnv();
 const db = createPool(config.databaseUrl);
@@ -15,14 +17,29 @@ const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'migra
 
 await migrate(db, migrationsDir);
 
+const log = (msg: string, extra?: Record<string, unknown>) => console.log(msg, extra ?? '');
+const ledger = new PgLedgerStore(db);
+const settings = new PgSettingsStore(db);
+
 const app = createApp({
-  ledger: new PgLedgerStore(db),
-  settings: new PgSettingsStore(db),
+  ledger,
+  settings,
   receipts: new PgReceiptStore(db),
   compliance: new PgComplianceStore(db),
   apiSecret: config.apiSecret,
   apiKey: config.apiKey,
-  log: (msg, extra) => console.log(msg, extra ?? ''),
+  log,
+});
+
+// Defense-in-depth against dropped webhooks: hourly diff of Shopify's own
+// order history against the ledger, for every shop with a stored Admin token.
+const runs = new PgReconRunStore(db);
+startReconciliationLoop({
+  runs,
+  client: new GraphqlAdminOrdersClient(runs),
+  ledger,
+  settings,
+  log,
 });
 
 serve({ fetch: app.fetch, port: config.port }, (info) => {

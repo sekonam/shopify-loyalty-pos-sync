@@ -7,5 +7,7 @@ export * from './settings.js';
 export * from './compliance.js';
 export * from './webhooks.js';
 export * from './reconciliation.js';
+export * from './admin-client.js';
+export * from './scheduler.js';
 export * from './pg-store.js';
 export * from './routes.js';

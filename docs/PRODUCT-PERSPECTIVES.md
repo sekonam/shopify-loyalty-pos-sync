@@ -132,6 +132,33 @@ already a felt cost. Listing copy, the community-thread reply, and first-10-cust
 should target this profile by name, not "any Shopify merchant with a POS" — and it's the same
 profile the offline-redemption-frequency question above should be checked against.
 
+## Addendum 3 (2026-10-01, after round 96)
+
+Round 96's two-week re-verification sharpens two arguments this file already makes, and adds one
+new decision input:
+
+- **The marketing-differentiation window is visibly narrowing, which strengthens — not weakens —
+  the switcher-first GTM.** Joy is shipping POS features roughly monthly; a small entrant (Nector)
+  now markets "real-time sync between web and POS" verbatim; and three vendors have posted
+  marketing replies into the key community thread itself. "POS sync" as a *claim* is becoming
+  table stakes. What no incumbent can copy in a sprint is *proof*: the append-only ledger, the
+  reconciliation job (now quotable as Shopify's own first-party webhook guidance), and the
+  Rivo/Firepot counter-example round 96 found — a mutable-balance incumbent zeroing ~23,000
+  customers' balances overnight is the single best third-party argument for this architecture yet.
+  The listing-copy claim worth making is falsifiable reliability ("a dropped webhook can't
+  silently drift your ledger; a bad integration can't zero it"), not the sync feature itself.
+- **The design-partner motion gains urgency.** Every month of Joy's shipping cadence erodes the
+  cold-discovery version of this product further. The named reviewers (all re-verified still
+  live and unresolved on 2026-10-01) remain the real near-term market.
+- **New decision input — the native store-credit rail** (TECHNICAL-SPEC §7, round 96 §3). If
+  redemption converts points to Shopify's native store credit, part of the "two integration
+  surfaces" build cost and risk collapses into one Admin API call — which would also soften this
+  file's platform-concentration worry about the young POS-extensions API surface, since less
+  custom surface would depend on it. But it ties redemption UX to Shopify's own store-credit-at-POS
+  reliability, which 2026 threads say is still shaky. Resolve by spike, not preference — and note
+  the answer also shapes positioning: "your points become store credit, visible everywhere Shopify
+  shows credit" is a materially different pitch from "points as discounts, applied by our app."
+
 ## Net read
 
 I'd rate this a reasonable bet at the size the dossier proposes it at: cheap to falsify, evidence

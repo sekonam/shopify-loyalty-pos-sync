@@ -128,7 +128,12 @@ diff against `points_ledger_entry` by `order_id`/`refund_id`, and insert any mis
 `reason = 'reconciliation'` and a `reconcile:` idempotency key so it can never double-apply
 alongside a webhook that arrives late. This is the defense-in-depth `CLAUDE.md` names as a day-one
 requirement, not a v2 addition — a dropped `orders/paid` webhook should self-heal within one
-reconciliation cycle, not require a support ticket.
+reconciliation cycle, not require a support ticket. As of 2026-10-01 (round 96) this is also
+Shopify's own first-party guidance, verbatim from the webhooks docs: delivery "isn't always
+guaranteed," ordering within and across topics is not guaranteed, and apps should "use
+reconciliation jobs to periodically fetch data from Shopify" — quotable in listing copy, and a
+reason handlers must tolerate out-of-order delivery (e.g. a `refunds/create` arriving before its
+order's `orders/paid`), not just duplicates.
 
 ## 6. Extension surfaces
 
@@ -180,3 +185,19 @@ targets, per Shopify's documented pattern for this exact use case):
   gives real data on how contested this path actually is.
 - Materialized balance cache (§1) — only add if the `SUM(delta)` query actually shows up as a
   bottleneck under real load; don't build it speculatively.
+- **Redemption rail: discount-based (as drafted in §4/§6) vs. Shopify's native store-credit
+  ledger** (added round 96, 2026-10-01). Ecosystem commentary describes loyalty apps converting
+  points → native store credit via the Admin API, which is natively visible at checkout in new
+  customer accounts. That could replace both the checkout Function's discount mechanics and the
+  POS Cart-API discount application with one conversion call — or founder on the
+  store-credit-at-POS reliability gaps 2026 community threads still describe. The append-only
+  points ledger stays this app's own either way. Spike on a dev store before building either
+  redemption surface; see `round-96-refresh-2026-10-01.md` §3.
+- **Billing implementation**: Shopify is actively migrating billing toward "Shopify App Pricing"
+  (changelog, Sept 2026 — unlimited private plans, migration of existing subscriptions). Check
+  which mechanism is current before implementing the order-volume-gated plans, rather than
+  building against the older Billing API patterns the dossier names.
+- If ledger entries ever attribute POS redemptions to specific staff members, note
+  `session.currentSession.staffMemberId` was removed from POS UI Extensions in API 2026-10
+  (changelog 2026-09-17) — check the current attribution path first. `pos_device_id` in
+  `redemption_attempt` is unaffected.

@@ -19,6 +19,18 @@ const authed = async (path: string, init: RequestInit = {}, token?: string) =>
     },
   });
 
+describe('GET /admin', () => {
+  it('serves the embedded admin page with the app api key', async () => {
+    const { app } = makeApp();
+    const res = await app.request('http://localhost/admin');
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('shopify-api-key');
+    expect(html).toContain('test-client-id');
+    expect(html).toContain('app-bridge.js');
+  });
+});
+
 describe('POST /webhooks', () => {
   it('rejects a bad HMAC with 401 and processes nothing', async () => {
     const { app, deps } = makeApp();

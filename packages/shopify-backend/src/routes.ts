@@ -5,6 +5,7 @@ import {
 } from '@loyalty/ledger';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { adminPageHtml } from './admin-page.js';
 import { verifyWebhookHmac } from './hmac.js';
 import { verifySessionToken } from './session-token.js';
 import { processWebhook, type WebhookDeps } from './webhooks.js';
@@ -48,6 +49,9 @@ export function createApp(deps: AppDeps): Hono<Env> {
   const app = new Hono<Env>();
 
   app.get('/healthz', (c) => c.json({ ok: true }));
+
+  // The embedded admin page; its data calls go through the authed /api routes.
+  app.get('/admin', (c) => c.html(adminPageHtml(deps.apiKey)));
 
   // ---- Webhooks: HMAC on the raw bytes, then dispatch. Always answer fast;
   // Shopify's delivery timeout is 5s and non-2xx (incl. redirects) counts failed.

@@ -11,3 +11,4 @@ export * from './admin-client.js';
 export * from './scheduler.js';
 export * from './pg-store.js';
 export * from './routes.js';
+export * from './admin-page.js';

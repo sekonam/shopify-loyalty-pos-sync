@@ -93,13 +93,14 @@ to keep the wedge provable before general feature-building starts.
 
 ## MCP servers for this repo
 
-- **Shopify Dev MCP** — verified against `shopify.dev/docs/apps/build/devmcp` on 2026-09-18:
+- **Shopify Dev MCP** — verified against `shopify.dev/docs/apps/build/devmcp` on 2026-09-18,
+  re-verified unchanged 2026-10-01 (round 96; `@shopify/dev-mcp` 1.16.0, `@shopify/cli` 4.8.3):
   `claude mcp add --transport stdio shopify-dev-mcp -- npx -y @shopify/dev-mcp@latest`. Runs
   locally, no authentication required. Exposes developer-doc/API-schema lookup, GraphQL
   query/Liquid/Extension code validation, and (via authenticated Shopify CLI) store management.
   Add this before starting real implementation — it replaces manual `shopify.dev` WebFetch
   round-trips with schema-accurate answers. Re-verify the command if it's been more than a few
-  months since 2026-09-18; this tooling is young enough to still be churning.
+  months since the last verification date above; this tooling is young enough to still be churning.
 - **GitHub**: Claude Code's built-in `gh` CLI access covers standard PR/issue workflows already —
   don't add a GitHub MCP server on top of that unless a specific gap shows up (e.g. needing
   structured PR review comment data an MCP server exposes that `gh api` doesn't conveniently).

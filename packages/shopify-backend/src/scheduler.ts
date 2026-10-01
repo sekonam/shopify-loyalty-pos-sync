@@ -48,10 +48,13 @@ export class PgReconRunStore implements ReconRunStore, TokenProvider {
   }
 
   async shopsToReconcile(): Promise<string[]> {
+    // Inner join on an installed settings row: a shop with a token but no
+    // settings (e.g. just purged by shop/redact) must NOT be reconciled —
+    // that would resurrect redacted data from the Admin API.
     const { rows } = await this.db.query(
       `select t.shop_domain from shop_token t
-        left join shop_settings s on s.shop_domain = t.shop_domain
-        where s.uninstalled_at is null or s.shop_domain is null`,
+        join shop_settings s on s.shop_domain = t.shop_domain
+        where s.uninstalled_at is null`,
     );
     return rows.map((r) => r.shop_domain as string);
   }

@@ -6,9 +6,13 @@ query CartInput {
     redeemAttempt: attribute(key: "loyalty_attempt") {
       value
     }
+    redeemCurrency: attribute(key: "loyalty_currency") {
+      value
+    }
     cost {
       subtotalAmount {
         amount
+        currencyCode
       }
     }
   }

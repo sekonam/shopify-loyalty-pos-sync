@@ -10,6 +10,7 @@ const balancePayload = {
   balance: 250,
   minRedemption: 100,
   redemptionRate: '100',
+  currency: 'USD',
   maxDiscountAmount: '2.50',
 };
 
@@ -17,6 +18,8 @@ function primeShopify() {
   const s = extension.shopify as unknown as Record<string, unknown>;
   (s['settings'] as { value: unknown }).value = { backend_url: 'https://backend.test' };
   (s['sessionToken'] as { get: unknown }).get = vi.fn().mockResolvedValue('tok-123');
+  const cost = s['cost'] as { totalAmount: { value: unknown } };
+  cost.totalAmount.value = { amount: '100.00', currencyCode: 'USD' };
 }
 
 const redeemButton = () =>
@@ -84,6 +87,11 @@ describe('checkout loyalty block', () => {
     expect(applyAttributeChange).toHaveBeenCalledWith(
       expect.objectContaining({ key: 'loyalty_attempt' }),
     );
+    expect(applyAttributeChange).toHaveBeenCalledWith({
+      type: 'updateAttribute',
+      key: 'loyalty_currency',
+      value: 'USD',
+    });
     expect(document.body.textContent).toContain('You have 50 points');
     const redeemCall = (extension.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([u]) =>
       String(u).includes('/api/redeem'),
@@ -91,6 +99,56 @@ describe('checkout loyalty block', () => {
     const sent = JSON.parse((redeemCall?.[1] as RequestInit).body as string);
     expect(sent).toMatchObject({ channel: 'web', points: 200 });
     expect(sent.customerId).toBeUndefined();
+    // One redemption per checkout: the form is gone after success.
+    expect(redeemButton()).toBeUndefined();
+  });
+
+  it('hides itself when the checkout currency differs from the shop currency', async () => {
+    const s = extension.shopify as unknown as Record<string, unknown>;
+    (s['cost'] as { totalAmount: { value: unknown } }).totalAmount.value = {
+      amount: '15000',
+      currencyCode: 'JPY',
+    };
+    extension.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify(balancePayload), { status: 200 }));
+    await extension.render();
+    await waitFor(() => expect(document.body.textContent ?? '').not.toContain('Loading'));
+    expect(document.body.textContent ?? '').not.toContain('Loyalty points');
+  });
+
+  it('a failed redeem keeps the attempt id so retry cannot double-debit', async () => {
+    const redeemAttemptIds: string[] = [];
+    let failNext = true;
+    extension.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/balance')) {
+        return new Response(JSON.stringify(balancePayload), { status: 200 });
+      }
+      redeemAttemptIds.push(JSON.parse(init?.body as string).attemptId);
+      if (failNext) {
+        failNext = false;
+        throw new TypeError('network lost');
+      }
+      return new Response(
+        JSON.stringify({ status: 'applied', balance: 50, discountAmount: '2.00' }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    (extension.shopify as unknown as Record<string, unknown>)['applyAttributeChange'] = vi
+      .fn()
+      .mockResolvedValue({ type: 'success' });
+
+    await extension.render();
+    await waitFor(() => expect(document.body.textContent).toContain('You have 250 points'));
+    setPoints('200');
+    await waitFor(() => expect(redeemButton().hasAttribute('disabled')).toBe(false));
+    fireEvent.click(redeemButton());
+    await waitFor(() => expect(document.body.textContent).toContain("won't be charged twice"));
+    fireEvent.click(redeemButton());
+    await waitFor(() => expect(document.body.textContent).toContain('200 points redeemed'));
+    expect(redeemAttemptIds).toHaveLength(2);
+    expect(redeemAttemptIds[0]).toBe(redeemAttemptIds[1]);
   });
 
   it('a rejected redemption writes no attributes', async () => {

@@ -36,6 +36,29 @@ export function floorProduct(a: string | number, b: string | number): number {
   return Number(floored);
 }
 
+/**
+ * Exact sum of decimal-string amounts (e.g. refund transaction amounts),
+ * returned as a decimal string. Handles any scale — 0-decimal (JPY) and
+ * 3-decimal (BHD) currencies included — where cent-based math would not.
+ */
+export function sumAmounts(amounts: Array<string | number>): string {
+  let total = 0n;
+  let scale = 0;
+  for (const a of amounts) {
+    const d = parseDecimal(a);
+    if (d.scale > scale) {
+      total *= 10n ** BigInt(d.scale - scale);
+      scale = d.scale;
+    }
+    total += d.value * 10n ** BigInt(scale - d.scale);
+  }
+  if (scale === 0) return total.toString();
+  const sign = total < 0n ? '-' : '';
+  const abs = total < 0n ? -total : total;
+  const divisor = 10n ** BigInt(scale);
+  return `${sign}${abs / divisor}.${(abs % divisor).toString().padStart(scale, '0')}`;
+}
+
 export function isNonNegativeDecimal(input: string | number): boolean {
   try {
     return parseDecimal(input).value >= 0n;

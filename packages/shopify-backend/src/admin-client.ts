@@ -21,6 +21,7 @@ const RECON_QUERY = /* GraphQL */ `
         id
         sourceName
         test
+        displayFinancialStatus
         customer {
           id
         }
@@ -29,7 +30,7 @@ const RECON_QUERY = /* GraphQL */ `
             amount
           }
         }
-        refunds(first: 10) {
+        refunds(first: 50) {
           id
           totalRefundedSet {
             shopMoney {
@@ -54,6 +55,7 @@ interface ReconQueryResponse {
         id: string;
         sourceName: string | null;
         test: boolean;
+        displayFinancialStatus: string | null;
         customer: { id: string } | null;
         totalPriceSet: { shopMoney: { amount: string } };
         refunds: Array<{ id: string; totalRefundedSet: { shopMoney: { amount: string } } }>;
@@ -107,6 +109,7 @@ export class GraphqlAdminOrdersClient implements AdminOrdersClient {
       id: n.id,
       sourceName: n.sourceName,
       test: n.test,
+      financialStatus: n.displayFinancialStatus,
       ...(n.customer ? { customerId: n.customer.id } : {}),
       totalPrice: n.totalPriceSet.shopMoney.amount,
       refunds: n.refunds.map((r) => ({

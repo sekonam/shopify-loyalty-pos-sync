@@ -1,6 +1,6 @@
 /// <reference types="@shopify/ui-extensions/purchase.checkout.block.render" />
 import { render } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 
 /**
  * Checkout block: shows the signed-in customer's live balance and lets them
@@ -15,7 +15,15 @@ interface BalanceResponse {
   balance: number;
   minRedemption: number;
   redemptionRate: string;
+  currency: string | null;
   maxDiscountAmount: string;
+}
+
+/** Presentment currency of this checkout, from the cost API. */
+function presentmentCurrency(): string | undefined {
+  const total = (shopify as unknown as { cost?: { totalAmount?: { value?: { currencyCode?: string } } } })
+    .cost?.totalAmount?.value;
+  return total?.currencyCode;
 }
 
 type Phase =
@@ -41,6 +49,12 @@ function Checkout() {
   const [hidden, setHidden] = useState(false);
   const [points, setPoints] = useState(0);
   const [phase, setPhase] = useState<Phase>({ name: 'idle' });
+  // One redemption per checkout: a second ledger debit would overwrite (not
+  // accumulate) the single discount attribute, charging points for nothing.
+  const [redeemed, setRedeemed] = useState(false);
+  // Survives a failed call so a retry replays the SAME attempt (idempotent
+  // on the backend) instead of double-debiting; cleared on definitive outcome.
+  const attemptIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     if (backendUrl() === '') {
@@ -54,7 +68,15 @@ function Checkout() {
       .then(async (res) => {
         if (!res.ok) throw new Error(String(res.status));
         const body = (await res.json()) as BalanceResponse;
-        if (!cancelled) setInfo(body);
+        if (cancelled) return;
+        // v1 is single-currency: redemptions are priced in the shop currency,
+        // so a checkout presented in a different currency gets no widget.
+        const presentment = presentmentCurrency();
+        if (body.currency && presentment && body.currency !== presentment) {
+          setHidden(true);
+          return;
+        }
+        setInfo(body);
       })
       .catch(() => {
         if (!cancelled) setHidden(true);
@@ -68,6 +90,7 @@ function Checkout() {
   if (info === undefined) return <s-text>Loading loyalty balance…</s-text>;
 
   const redeemDisabled =
+    redeemed ||
     phase.name === 'redeeming' ||
     points <= 0 ||
     points < info.minRedemption ||
@@ -75,7 +98,8 @@ function Checkout() {
 
   const onRedeem = async () => {
     setPhase({ name: 'redeeming' });
-    const attemptId = crypto.randomUUID();
+    const attemptId = attemptIdRef.current ?? crypto.randomUUID();
+    attemptIdRef.current = attemptId;
     try {
       const res = await authedFetch('/api/redeem', {
         method: 'POST',
@@ -87,6 +111,8 @@ function Checkout() {
         balance: number;
         discountAmount?: string;
       };
+      // Definitive answer from the backend either way.
+      attemptIdRef.current = undefined;
       if (body.status !== 'applied' || body.discountAmount === undefined) {
         setInfo({ ...info, balance: body.balance ?? info.balance });
         setPhase({
@@ -101,6 +127,7 @@ function Checkout() {
         });
         return;
       }
+      setRedeemed(true); // the debit landed — never offer a second one here
       const attr = await shopify.applyAttributeChange({
         type: 'updateAttribute',
         key: 'loyalty_discount',
@@ -111,7 +138,12 @@ function Checkout() {
         key: 'loyalty_attempt',
         value: attemptId,
       });
-      if (attr.type !== 'success' || attr2.type !== 'success') {
+      const attr3 = await shopify.applyAttributeChange({
+        type: 'updateAttribute',
+        key: 'loyalty_currency',
+        value: info.currency ?? presentmentCurrency() ?? '',
+      });
+      if (attr.type !== 'success' || attr2.type !== 'success' || attr3.type !== 'success') {
         setPhase({
           name: 'done',
           tone: 'critical',
@@ -127,10 +159,11 @@ function Checkout() {
         message: `${points} points redeemed — ${body.discountAmount} off applied.`,
       });
     } catch {
+      // attemptIdRef kept: pressing Redeem again replays the same attempt.
       setPhase({
         name: 'done',
         tone: 'critical',
-        message: "Couldn't reach the loyalty service — your points were not changed.",
+        message: "Couldn't reach the loyalty service. Try again — you won't be charged twice.",
       });
     }
   };
@@ -139,19 +172,25 @@ function Checkout() {
     <s-stack direction="block">
       <s-heading>Loyalty points</s-heading>
       <s-text>{`You have ${info.balance} points (worth up to ${info.maxDiscountAmount}).`}</s-text>
-      <s-number-field
-        label="Points to redeem"
-        value={String(points)}
-        min={0}
-        onChange={(e: Event) =>
-          setPoints(
-            Number.parseInt((e.currentTarget as { value?: string } | null)?.value ?? '', 10) || 0,
-          )
-        }
-      ></s-number-field>
-      <s-button disabled={redeemDisabled} loading={phase.name === 'redeeming'} onClick={onRedeem}>
-        Redeem points
-      </s-button>
+      {redeemed ? null : (
+        <s-number-field
+          label="Points to redeem"
+          value={String(points)}
+          min={0}
+          onChange={(e: Event) => {
+            attemptIdRef.current = undefined; // new amount = new attempt
+            setPoints(
+              Number.parseInt((e.currentTarget as { value?: string } | null)?.value ?? '', 10) ||
+                0,
+            );
+          }}
+        ></s-number-field>
+      )}
+      {redeemed ? null : (
+        <s-button disabled={redeemDisabled} loading={phase.name === 'redeeming'} onClick={onRedeem}>
+          Redeem points
+        </s-button>
+      )}
       {phase.name === 'done' ? (
         <s-banner
           heading={phase.tone === 'success' ? 'Points redeemed' : 'Not applied'}

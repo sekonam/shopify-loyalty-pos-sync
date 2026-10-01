@@ -105,6 +105,7 @@ describe('GET /api/balance', () => {
       balance: 250,
       minRedemption: 100,
       redemptionRate: '100',
+      currency: 'USD',
       maxDiscountAmount: '2.50',
     });
   });
@@ -181,6 +182,39 @@ describe('POST /api/redeem', () => {
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(100);
+  });
+});
+
+describe('merchant-only routes', () => {
+  it('a customer session token cannot touch settings, entries, or the CSV export', async () => {
+    const { app } = makeApp();
+    const customerToken = await sessionToken(SHOP, { sub: CUSTOMER });
+    for (const req of [
+      await authed('/settings', {}, customerToken),
+      await authed(
+        '/settings',
+        {
+          method: 'PUT',
+          body: JSON.stringify({ redemptionRate: '0.01' }),
+          headers: { 'content-type': 'application/json' },
+        },
+        customerToken,
+      ),
+      await authed('/entries', {}, customerToken),
+      await authed('/ledger.csv', {}, customerToken),
+    ]) {
+      const res = await app.request(req);
+      expect(res.status, req.url).toBe(403);
+    }
+  });
+
+  it('a webhook handler failure returns 500 so Shopify retries', async () => {
+    const { app, deps } = makeApp();
+    deps.ledger.append = async () => {
+      throw new Error('db down');
+    };
+    const res = await app.request(webhookRequest('orders/paid', paidOrder()));
+    expect(res.status).toBe(500);
   });
 });
 

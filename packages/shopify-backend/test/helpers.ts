@@ -74,6 +74,7 @@ export const paidOrder = (over: Record<string, unknown> = {}) => ({
   source_name: 'pos',
   test: false,
   total_price: '50.00',
+  currency: 'USD',
   customer: { id: 42, admin_graphql_api_id: 'gid://shopify/Customer/42' },
   ...over,
 });

@@ -109,6 +109,9 @@ export class InMemoryLedgerStore implements LedgerStore {
   }
 
   async redeem(request: RedeemRequest): Promise<RedeemResult> {
+    if (!Number.isInteger(request.requestedPoints) || request.requestedPoints <= 0) {
+      throw new Error(`requestedPoints must be a positive integer, got ${request.requestedPoints}`);
+    }
     return this.withLock(this.lockKey(request.shopDomain, request.customerId), async () => {
       const attempts = this.shopAttempts(request.shopDomain);
       const existing = attempts.get(request.attemptId);

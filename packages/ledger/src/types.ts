@@ -63,6 +63,8 @@ export interface ShopSettings {
   redemptionRate: string;
   /** Minimum points per redemption. */
   minRedemption: number;
+  /** Shop currency (ISO code), learned from the first order webhook. */
+  currency?: string;
   installedAt: Date;
   uninstalledAt?: Date;
 }

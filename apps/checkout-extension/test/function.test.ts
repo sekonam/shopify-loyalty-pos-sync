@@ -7,13 +7,21 @@ import {
 const input = (over: {
   amount?: string | null;
   attempt?: string | null;
+  currency?: string | null;
   subtotal?: string;
+  cartCurrency?: string;
   classes?: string[];
 }): CartInput => ({
   cart: {
     redeemAmount: over.amount === undefined ? null : { value: over.amount },
     redeemAttempt: over.attempt === undefined ? { value: 'a-1' } : { value: over.attempt },
-    cost: { subtotalAmount: { amount: over.subtotal ?? '100.00' } },
+    redeemCurrency: over.currency === undefined ? { value: 'USD' } : { value: over.currency },
+    cost: {
+      subtotalAmount: {
+        amount: over.subtotal ?? '100.00',
+        currencyCode: over.cartCurrency ?? 'USD',
+      },
+    },
   },
   discount: { discountClasses: over.classes ?? ['ORDER'] },
 });
@@ -65,6 +73,18 @@ describe('cartLinesDiscountsGenerateRun', () => {
         operations: [],
       });
     }
+  });
+
+  it('emits nothing when the redemption currency does not match the cart currency', () => {
+    expect(
+      cartLinesDiscountsGenerateRun(input({ amount: '10.00', cartCurrency: 'JPY' })),
+    ).toEqual({ operations: [] });
+    expect(cartLinesDiscountsGenerateRun(input({ amount: '10.00', currency: null }))).toEqual({
+      operations: [],
+    });
+    expect(cartLinesDiscountsGenerateRun(input({ amount: '10.00', currency: '' }))).toEqual({
+      operations: [],
+    });
   });
 
   it('clamps the discount to the cart subtotal', () => {

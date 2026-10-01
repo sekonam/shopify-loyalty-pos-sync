@@ -70,11 +70,14 @@ export class PgLedgerStore implements LedgerStore {
   }
 
   async redeem(request: RedeemRequest): Promise<RedeemResult> {
+    if (!Number.isInteger(request.requestedPoints) || request.requestedPoints <= 0) {
+      throw new Error(`requestedPoints must be a positive integer, got ${request.requestedPoints}`);
+    }
     return withTransaction(this.db, async (client) => {
       await this.lockCustomer(client, request.shopDomain, request.customerId);
 
       const existing = await client.query(
-        'select * from redemption_attempt where shop_domain = $1 and id = $2',
+        'select * from redemption_attempt where shop_domain = $1 and id::text = $2',
         [request.shopDomain, request.attemptId],
       );
       if (existing.rows[0]) {
@@ -121,8 +124,10 @@ export class PgLedgerStore implements LedgerStore {
   }
 
   async getAttempt(shopDomain: string, attemptId: string): Promise<RedemptionAttempt | undefined> {
+    // id::text comparison: attemptId can be caller-supplied (e.g. a customer-
+    // editable note attribute) — a non-UUID value must miss, not raise 22P02.
     const { rows } = await this.db.query(
-      'select * from redemption_attempt where shop_domain = $1 and id = $2',
+      'select * from redemption_attempt where shop_domain = $1 and id::text = $2',
       [shopDomain, attemptId],
     );
     return rows[0] ? rowToAttempt(rows[0]) : undefined;

@@ -29,6 +29,8 @@ export interface ReconOrder {
   id: string;
   sourceName: string | null;
   test: boolean;
+  /** Order.displayFinancialStatus — gates earning (see PAID_STATUSES). */
+  financialStatus: string | null;
   customerId?: string;
   /** totalPriceSet.shopMoney.amount */
   totalPrice: string;
@@ -39,6 +41,14 @@ export interface ReconOrder {
     totalRefunded: string;
   }>;
 }
+
+/**
+ * Statuses whose orders have actually been paid in full at some point — the
+ * states orders/paid itself would have fired for. PENDING/AUTHORIZED/
+ * PARTIALLY_PAID orders must not earn (money hasn't arrived); refunded ones
+ * earned once and their refunds are reversed below.
+ */
+export const PAID_STATUSES = new Set(['PAID', 'PARTIALLY_REFUNDED', 'REFUNDED']);
 
 export interface ReconciliationResult {
   ordersSeen: number;
@@ -75,7 +85,8 @@ export async function reconcileShop(
       ordersSeen += 1;
       if (order.test || !order.customerId) continue;
 
-      if (!(await deps.ledger.hasEntry(shopDomain, orderPaidKey(order.id)))) {
+      const paid = PAID_STATUSES.has(order.financialStatus ?? '');
+      if (paid && !(await deps.ledger.hasEntry(shopDomain, orderPaidKey(order.id)))) {
         const draft = earnEntryFromOrder({
           shopDomain,
           customerId: order.customerId,

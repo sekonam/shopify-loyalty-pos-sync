@@ -20,23 +20,34 @@ export async function migrate(db: Db, migrationsDir: string): Promise<void> {
        applied_at timestamptz not null default now()
      )`,
   );
-  const files = (await readdir(migrationsDir)).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    const { rowCount } = await db.query('select 1 from schema_migration where name = $1', [file]);
-    if (rowCount) continue;
-    const sql = await readFile(join(migrationsDir, file), 'utf8');
-    const client = await db.connect();
-    try {
-      await client.query('begin');
-      await client.query(sql);
-      await client.query('insert into schema_migration (name) values ($1)', [file]);
-      await client.query('commit');
-    } catch (err) {
-      await client.query('rollback');
-      throw err;
-    } finally {
-      client.release();
+  // Session-level advisory lock so concurrently booting instances don't race
+  // each other through the migration list.
+  const lockClient = await db.connect();
+  try {
+    await lockClient.query('select pg_advisory_lock(812736450)');
+    const files = (await readdir(migrationsDir)).filter((f) => f.endsWith('.sql')).sort();
+    for (const file of files) {
+      const { rowCount } = await db.query('select 1 from schema_migration where name = $1', [
+        file,
+      ]);
+      if (rowCount) continue;
+      const sql = await readFile(join(migrationsDir, file), 'utf8');
+      const client = await db.connect();
+      try {
+        await client.query('begin');
+        await client.query(sql);
+        await client.query('insert into schema_migration (name) values ($1)', [file]);
+        await client.query('commit');
+      } catch (err) {
+        await client.query('rollback');
+        throw err;
+      } finally {
+        client.release();
+      }
     }
+  } finally {
+    await lockClient.query('select pg_advisory_unlock(812736450)').catch(() => undefined);
+    lockClient.release();
   }
 }
 

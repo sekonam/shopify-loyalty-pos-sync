@@ -22,7 +22,8 @@ export interface CartInput {
   cart: {
     redeemAmount?: { value?: string | null } | null;
     redeemAttempt?: { value?: string | null } | null;
-    cost: { subtotalAmount: { amount: string } };
+    redeemCurrency?: { value?: string | null } | null;
+    cost: { subtotalAmount: { amount: string; currencyCode: string } };
   };
   discount: { discountClasses: string[] };
 }
@@ -51,6 +52,13 @@ export function cartLinesDiscountsGenerateRun(
   const raw = input.cart.redeemAmount?.value ?? '';
   const attempt = input.cart.redeemAttempt?.value ?? '';
   if (!AMOUNT_RE.test(raw) || attempt === '') return { operations: [] };
+
+  // The amount was priced in one specific currency at redeem time; it must
+  // never be applied verbatim to a cart presented in a different currency.
+  const pricedIn = input.cart.redeemCurrency?.value ?? '';
+  if (pricedIn === '' || pricedIn !== input.cart.cost.subtotalAmount.currencyCode) {
+    return { operations: [] };
+  }
 
   const amount = Number(raw);
   const subtotal = Number(input.cart.cost.subtotalAmount.amount);

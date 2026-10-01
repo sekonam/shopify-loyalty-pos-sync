@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { balanceView, redeemStatusMessage } from '../src/state.js';
+import { balanceView, failedFetch, redeemStatusMessage } from '../src/state.js';
 
 const at = new Date('2026-10-01T12:00:00Z');
 
@@ -40,6 +40,22 @@ describe('balanceView — the disable-when-offline rule', () => {
       kind: 'unavailable',
       redeemEnabled: false,
     });
+  });
+
+  it('a failed refetch keeps the last confirmed balance, labeled stale, never live', () => {
+    const afterFailure = failedFetch({ ok: true, balance: 250, at });
+    expect(afterFailure).toEqual({ ok: false, lastGood: { balance: 250, at } });
+    // Repeated failures keep the same lastGood; failure from nothing stays empty.
+    expect(failedFetch(afterFailure)).toBe(afterFailure);
+    expect(failedFetch(undefined)).toEqual({ ok: false });
+
+    const connectedButDown = balanceView({ connection: 'Connected', lastFetch: afterFailure });
+    expect(connectedButDown).toMatchObject({ kind: 'stale', balance: 250, redeemEnabled: false });
+    expect(connectedButDown.statusLine).toContain("Can't reach the loyalty service");
+
+    const offline = balanceView({ connection: 'Disconnected', lastFetch: afterFailure });
+    expect(offline).toMatchObject({ kind: 'stale', balance: 250, redeemEnabled: false });
+    expect(offline.statusLine).toContain('Offline');
   });
 });
 

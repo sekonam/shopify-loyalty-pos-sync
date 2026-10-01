@@ -1,8 +1,8 @@
 /// <reference types="@shopify/ui-extensions/pos.customer-details.action.render" />
 import { render } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { customerGid, fetchBalance, redeemPoints, type BalanceResponse } from './client.js';
-import { balanceView, redeemStatusMessage, type BalanceInputs } from './state.js';
+import { balanceView, failedFetch, redeemStatusMessage, type FetchState } from './state.js';
 
 type Phase =
   | { name: 'idle' }
@@ -11,7 +11,12 @@ type Phase =
 
 function Action() {
   const [info, setInfo] = useState<BalanceResponse | undefined>(undefined);
-  const [lastFetch, setLastFetch] = useState<BalanceInputs['lastFetch']>(undefined);
+  const [lastFetch, setLastFetch] = useState<FetchState>(undefined);
+  // The attempt id survives a failed call: a retry after a timeout whose
+  // server write actually committed must reuse the SAME id so the backend's
+  // idempotent replay answers instead of double-debiting. It is cleared only
+  // on a definitive outcome, and re-minted when the points amount changes.
+  const attemptIdRef = useRef<string | undefined>(undefined);
   const [connection, setConnection] = useState(
     shopify.connectivity.current.value.internetConnected,
   );
@@ -25,20 +30,19 @@ function Action() {
     return unsubscribe;
   }, []);
 
+  const loadBalance = async (): Promise<void> => {
+    try {
+      const res = await fetchBalance(customerGid(shopify.customer.id));
+      setInfo(res);
+      setLastFetch({ ok: true, balance: res.balance, at: new Date() });
+    } catch {
+      setLastFetch(failedFetch);
+    }
+  };
+
   useEffect(() => {
-    let cancelled = false;
-    fetchBalance(customerGid(shopify.customer.id))
-      .then((res) => {
-        if (cancelled) return;
-        setInfo(res);
-        setLastFetch({ ok: true, balance: res.balance, at: new Date() });
-      })
-      .catch(() => {
-        if (!cancelled) setLastFetch({ ok: false });
-      });
-    return () => {
-      cancelled = true;
-    };
+    void loadBalance();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection]);
 
   const view = balanceView({ connection, lastFetch });
@@ -53,9 +57,8 @@ function Action() {
   const onRedeem = async () => {
     if (info === undefined) return;
     setPhase({ name: 'redeeming' });
-    // The attempt id is minted at the moment staff confirms: a timed-out call
-    // retried with the same id can never double-apply (backend contract).
-    const attemptId = crypto.randomUUID();
+    const attemptId = attemptIdRef.current ?? crypto.randomUUID();
+    attemptIdRef.current = attemptId;
     try {
       const result = await redeemPoints({
         customerId: customerGid(shopify.customer.id),
@@ -63,6 +66,8 @@ function Action() {
         attemptId,
         posDeviceId: String(shopify.session.deviceId ?? ''),
       });
+      // Definitive outcome either way: the next redemption is a new attempt.
+      attemptIdRef.current = undefined;
       if (result.status === 'applied' && 'discountAmount' in result) {
         await shopify.cart.applyCartDiscount('FixedAmount', result.discountTitle, result.discountAmount);
         setLastFetch({ ok: true, balance: result.balance, at: new Date() });
@@ -72,14 +77,16 @@ function Action() {
         setPhase({ name: 'done', tone: 'warning', message: redeemStatusMessage(result.status) });
       }
     } catch {
-      // The write may or may not have landed; the balance shown is no longer
-      // confirmed. Same attemptId retry is safe, but we force a re-read first.
-      setLastFetch({ ok: false });
+      // The write may or may not have landed. attemptIdRef is kept, so a
+      // retry replays the same attempt instead of double-debiting; the shown
+      // balance is downgraded to unconfirmed and re-read so retry re-enables.
+      setLastFetch(failedFetch);
       setPhase({
         name: 'done',
         tone: 'critical',
         message: redeemStatusMessage('rejected_stale_offline_state'),
       });
+      void loadBalance();
     }
   };
 
@@ -100,9 +107,10 @@ function Action() {
             label="Points to redeem"
             value={String(points)}
             min={0}
-            onChange={(e: { currentTarget: { value?: string } }) =>
-              setPoints(Number.parseInt(e.currentTarget.value ?? '', 10) || 0)
-            }
+            onChange={(e: { currentTarget: { value?: string } }) => {
+              attemptIdRef.current = undefined; // new amount = new attempt
+              setPoints(Number.parseInt(e.currentTarget.value ?? '', 10) || 0);
+            }}
           ></s-number-field>
           <s-button
             variant="primary"

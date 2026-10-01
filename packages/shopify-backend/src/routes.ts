@@ -69,10 +69,17 @@ export function createApp(deps: AppDeps): Hono<Env> {
     if (!topic || !shopDomain || !webhookId) {
       return c.json({ error: 'missing webhook headers' }, 400);
     }
-    const outcome = await processWebhook({ topic, shopDomain, webhookId, rawBody }, deps);
-    // Unknown topics still get 200 — retrying them cannot help and 8 failures
-    // removes the subscription.
-    return c.json(outcome, 200);
+    try {
+      const outcome = await processWebhook({ topic, shopDomain, webhookId, rawBody }, deps);
+      // Unknown topics still get 200 — retrying them cannot help and 8 failures
+      // removes the subscription.
+      return c.json(outcome, 200);
+    } catch (err) {
+      // Handler failure: the receipt stays unprocessed, the non-2xx makes
+      // Shopify redeliver, and the redelivery re-runs the handler.
+      deps.log?.('webhook handler failed', { topic, shopDomain, webhookId, error: String(err) });
+      return c.json({ error: 'handler failed, retry expected' }, 500);
+    }
   });
 
   // ---- Extension/admin API: session-token auth (POS, checkout, and the
@@ -111,6 +118,9 @@ export function createApp(deps: AppDeps): Hono<Env> {
       balance,
       minRedemption: settings.minRedemption,
       redemptionRate: settings.redemptionRate,
+      // Redemptions are priced in the shop currency; checkout must not offer
+      // redemption in a different presentment currency (v1 single-currency).
+      currency: settings.currency ?? null,
       maxDiscountAmount: redemptionDiscountAmount(
         Math.max(balance, 0),
         settings.redemptionRate,
@@ -136,6 +146,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
     if (
       !attemptId ||
       !Number.isInteger(points) ||
+      (points as number) <= 0 ||
       (channel !== 'web' && channel !== 'pos') ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(attemptId)
     ) {
@@ -172,7 +183,19 @@ export function createApp(deps: AppDeps): Hono<Env> {
     });
   });
 
-  api.get('/entries', async (c) => {
+  // ---- Merchant-only routes. A checkout session token identifies a CUSTOMER
+  // (sub is a Customer gid); customers must never read other customers' data
+  // or rewrite shop configuration. Staff (POS) and admin (App Bridge) tokens
+  // carry a staff user sub instead and pass.
+  const merchant = new Hono<Env>();
+  merchant.use('*', async (c, next) => {
+    if (isCustomerGid(c.get('tokenSub'))) {
+      return c.json({ error: 'merchant session required' }, 403);
+    }
+    return next();
+  });
+
+  merchant.get('/entries', async (c) => {
     const shopDomain = c.get('shopDomain');
     const customerId = c.req.query('customerId');
     const entries = customerId
@@ -181,7 +204,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
     return c.json({ entries });
   });
 
-  api.get('/ledger.csv', async (c) => {
+  merchant.get('/ledger.csv', async (c) => {
     const shopDomain = c.get('shopDomain');
     const customerId = c.req.query('customerId');
     const entries = customerId
@@ -208,7 +231,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
     });
   });
 
-  api.get('/settings', async (c) => {
+  merchant.get('/settings', async (c) => {
     const settings = await deps.settings.get(c.get('shopDomain'));
     return c.json({
       earnRate: settings.earnRate,
@@ -217,7 +240,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
     });
   });
 
-  api.put('/settings', async (c) => {
+  merchant.put('/settings', async (c) => {
     let body: { earnRate?: string; redemptionRate?: string; minRedemption?: number };
     try {
       body = await c.req.json();
@@ -247,6 +270,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
     });
   });
 
+  api.route('/', merchant);
   app.route('/api', api);
   return app;
 }

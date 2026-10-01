@@ -110,14 +110,32 @@ describe('redeem action modal', () => {
     expect(redeemButton().hasAttribute('disabled')).toBe(true);
   });
 
-  it('a timed-out redemption downgrades the balance to unconfirmed', async () => {
-    extension.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  it('a timed-out redemption keeps its attempt id and replays it on retry — no double debit', async () => {
+    const redeemAttemptIds: string[] = [];
+    let failNext = true;
+    extension.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith('/api/balance')) {
         return new Response(JSON.stringify(balancePayload), { status: 200 });
       }
-      throw new TypeError('network lost mid-call');
+      redeemAttemptIds.push(JSON.parse(init?.body as string).attemptId);
+      if (failNext) {
+        failNext = false;
+        throw new TypeError('network lost mid-call');
+      }
+      return new Response(
+        JSON.stringify({
+          status: 'applied',
+          balance: 50,
+          discountAmount: '2.00',
+          discountTitle: '200 points redeemed',
+        }),
+        { status: 200 },
+      );
     }) as unknown as typeof fetch;
+    const applyCartDiscount = vi.fn().mockResolvedValue(undefined);
+    extension.shopify.cart.applyCartDiscount = applyCartDiscount;
+
     await extension.render();
     await waitFor(() => expect(document.body.textContent).toContain('250 points available'));
     setPoints('200');
@@ -126,6 +144,12 @@ describe('redeem action modal', () => {
     await waitFor(() => {
       expect(document.body.textContent).toContain("Couldn't confirm the balance");
     });
-    expect(redeemButton().hasAttribute('disabled')).toBe(true);
+    // The automatic balance re-read re-enables the retry...
+    await waitFor(() => expect(redeemButton().hasAttribute('disabled')).toBe(false));
+    fireEvent.click(redeemButton());
+    await waitFor(() => expect(applyCartDiscount).toHaveBeenCalledTimes(1));
+    // ...and the retry carried the SAME attempt id (idempotent replay).
+    expect(redeemAttemptIds).toHaveLength(2);
+    expect(redeemAttemptIds[0]).toBe(redeemAttemptIds[1]);
   });
 });

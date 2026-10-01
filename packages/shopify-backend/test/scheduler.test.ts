@@ -118,6 +118,7 @@ describe('reconcileAllShops', () => {
               id: 'gid://shopify/Order/1',
               sourceName: 'pos',
               test: false,
+              financialStatus: 'PAID',
               customerId: CUSTOMER,
               totalPrice: '50.00',
               refunds: [],

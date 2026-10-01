@@ -10,6 +10,7 @@ const order = (over: Partial<ReconOrder> = {}): ReconOrder => ({
   id: 'gid://shopify/Order/1001',
   sourceName: 'pos',
   test: false,
+  financialStatus: 'PAID',
   customerId: CUSTOMER,
   totalPrice: '50.00',
   refunds: [],
@@ -104,7 +105,14 @@ describe('reconcileShop', () => {
       client: clientOf([
         [
           order({ test: true }),
-          { id: 'gid://shopify/Order/2', sourceName: 'web', test: false, totalPrice: '50.00', refunds: [] },
+          {
+            id: 'gid://shopify/Order/2',
+            sourceName: 'web',
+            test: false,
+            financialStatus: 'PAID',
+            totalPrice: '50.00',
+            refunds: [],
+          },
         ],
         [order({ id: 'gid://shopify/Order/3' })],
       ]),
@@ -112,5 +120,23 @@ describe('reconcileShop', () => {
       settings: deps.settings,
     });
     expect(result).toMatchObject({ ordersSeen: 3, earnsAdded: 1 });
+  });
+
+  it('unpaid orders never earn — only paid-class statuses do', async () => {
+    const deps = makeDeps();
+    const result = await reconcileShop(SHOP, new Date(0), {
+      client: clientOf([
+        [
+          order({ id: 'gid://shopify/Order/10', financialStatus: 'PENDING' }),
+          order({ id: 'gid://shopify/Order/11', financialStatus: 'AUTHORIZED' }),
+          order({ id: 'gid://shopify/Order/12', financialStatus: 'VOIDED' }),
+          order({ id: 'gid://shopify/Order/13', financialStatus: 'PARTIALLY_REFUNDED' }),
+        ],
+      ]),
+      ledger: deps.ledger,
+      settings: deps.settings,
+    });
+    expect(result.earnsAdded).toBe(1); // only the PARTIALLY_REFUNDED one
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(50);
   });
 });

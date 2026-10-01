@@ -52,6 +52,87 @@ describe('orders/paid', () => {
     expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(50);
   });
 
+  it('learns the shop currency from the first order', async () => {
+    const deps = makeDeps();
+    await deliver(deps, 'orders/paid', paidOrder({ currency: 'EUR' }));
+    expect((await deps.settings.get(SHOP)).currency).toBe('EUR');
+    // A later order in another (presentment) currency does not overwrite it.
+    await deliver(deps, 'orders/paid', paidOrder({ id: 2, admin_graphql_api_id: 'gid://shopify/Order/2', currency: 'USD' }));
+    expect((await deps.settings.get(SHOP)).currency).toBe('EUR');
+  });
+
+  it('claws back a discount claimed without a matching applied redemption', async () => {
+    const deps = makeDeps();
+    // Earlier order gives the customer 50 points; the attacker then forges a
+    // "5.00" loyalty discount (worth 500 points at rate 100) on a new order.
+    await deliver(deps, 'orders/paid', paidOrder({ id: 1, admin_graphql_api_id: 'gid://shopify/Order/1' }));
+    const outcome = await deliver(
+      deps,
+      'orders/paid',
+      paidOrder({
+        id: 2,
+        admin_graphql_api_id: 'gid://shopify/Order/2',
+        note_attributes: [
+          { name: 'loyalty_discount', value: '5.00' },
+          { name: 'loyalty_attempt', value: 'not-a-real-attempt' },
+        ],
+      }),
+    );
+    // 50 (old) + 50 (new earn) = 100 clawable of the 500-point excess.
+    expect(outcome).toMatchObject({ action: 'earned 50; ATTEMPT MISMATCH: clawed back 100' });
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(0);
+    const entries = await deps.ledger.entries(SHOP, CUSTOMER);
+    expect(entries.at(-1)).toMatchObject({ reason: 'adjustment', sourceName: 'system', delta: -100 });
+  });
+
+  it('does not claw back when the claimed discount matches the applied attempt', async () => {
+    const deps = makeDeps();
+    await deliver(deps, 'orders/paid', paidOrder({ id: 1, admin_graphql_api_id: 'gid://shopify/Order/1', total_price: '300.00' }));
+    const attemptId = '33333333-3333-4333-8333-333333333333';
+    await deps.ledger.redeem({
+      shopDomain: SHOP,
+      customerId: CUSTOMER,
+      channel: 'web',
+      requestedPoints: 200,
+      minRedemption: 1,
+      attemptId,
+    });
+    const outcome = await deliver(
+      deps,
+      'orders/paid',
+      paidOrder({
+        id: 2,
+        admin_graphql_api_id: 'gid://shopify/Order/2',
+        note_attributes: [
+          { name: 'loyalty_discount', value: '2.00' },
+          { name: 'loyalty_attempt', value: attemptId },
+        ],
+      }),
+    );
+    expect(outcome).toMatchObject({ action: 'earned 50' });
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(150); // 300 - 200 + 50
+  });
+
+  it('a failed handler leaves the receipt unprocessed so the retry re-runs it', async () => {
+    const deps = makeDeps();
+    const realAppend = deps.ledger.append.bind(deps.ledger);
+    let calls = 0;
+    deps.ledger.append = async (draft) => {
+      calls += 1;
+      if (calls === 1) throw new Error('db blip');
+      return realAppend(draft);
+    };
+    await expect(deliver(deps, 'orders/paid', paidOrder(), 'retry-1')).rejects.toThrow('db blip');
+    // Shopify redelivers with the same webhook id — not a duplicate, re-runs:
+    const retry = await deliver(deps, 'orders/paid', paidOrder(), 'retry-1');
+    expect(retry).toMatchObject({ action: 'earned 50' });
+    // A third delivery IS now a duplicate.
+    expect(await deliver(deps, 'orders/paid', paidOrder(), 'retry-1')).toEqual({
+      handled: true,
+      action: 'duplicate',
+    });
+  });
+
   it('flags an order claiming a loyalty attempt that was never applied', async () => {
     const deps = makeDeps();
     const logged: string[] = [];
@@ -64,7 +145,7 @@ describe('orders/paid', () => {
       }),
     );
     expect(outcome).toMatchObject({ action: 'earned 50; ATTEMPT MISMATCH logged' });
-    expect(logged.some((m) => m.includes('ghost-attempt'))).toBe(true);
+    expect(logged.some((m) => m.includes('without applied redemption'))).toBe(true);
   });
 
   it('accepts an order whose loyalty attempt is a real applied redemption', async () => {

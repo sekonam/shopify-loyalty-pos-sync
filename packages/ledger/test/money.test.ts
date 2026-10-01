@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { floorProduct, isNonNegativeDecimal, parseDecimal } from '../src/money.js';
+import { floorProduct, isNonNegativeDecimal, parseDecimal, sumAmounts } from '../src/money.js';
 
 describe('parseDecimal', () => {
   it('parses integers, decimals, and negatives', () => {
@@ -31,6 +31,16 @@ describe('floorProduct', () => {
   it('handles zero and large values', () => {
     expect(floorProduct('0', '1')).toBe(0);
     expect(floorProduct('123456789.99', '2')).toBe(246913579);
+  });
+});
+
+describe('sumAmounts', () => {
+  it('sums mixed-scale decimal strings exactly', () => {
+    expect(sumAmounts(['10.00', '5.5', '0.05'])).toBe('15.55');
+    expect(sumAmounts(['12.345', '0.005'])).toBe('12.350'); // 3-dp currency (BHD)
+    expect(sumAmounts(['100', '200'])).toBe('300'); // 0-dp currency (JPY)
+    expect(sumAmounts([])).toBe('0');
+    expect(sumAmounts(['10.00', '-2.50'])).toBe('7.50');
   });
 });
 

@@ -2,10 +2,10 @@
 import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { customerGid, fetchBalance } from './client.js';
-import { balanceView, type BalanceInputs } from './state.js';
+import { balanceView, failedFetch, type FetchState } from './state.js';
 
 function Block() {
-  const [lastFetch, setLastFetch] = useState<BalanceInputs['lastFetch']>(undefined);
+  const [lastFetch, setLastFetch] = useState<FetchState>(undefined);
   const [connection, setConnection] = useState(
     shopify.connectivity.current.value.internetConnected,
   );
@@ -24,7 +24,7 @@ function Block() {
         if (!cancelled) setLastFetch({ ok: true, balance: res.balance, at: new Date() });
       })
       .catch(() => {
-        if (!cancelled) setLastFetch({ ok: false });
+        if (!cancelled) setLastFetch(failedFetch);
       });
     return () => {
       cancelled = true;

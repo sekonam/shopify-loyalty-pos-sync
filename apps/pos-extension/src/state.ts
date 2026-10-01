@@ -16,48 +16,62 @@ export interface BalanceView {
   statusLine: string;
 }
 
+export type FetchState =
+  | { ok: true; balance: number; at: Date }
+  | { ok: false; lastGood?: { balance: number; at: Date } }
+  | undefined;
+
 export interface BalanceInputs {
   connection: ConnectionState;
-  lastFetch:
-    | { ok: true; balance: number; at: Date }
-    | { ok: false }
-    | undefined;
+  lastFetch: FetchState;
+}
+
+/**
+ * Downgrades the fetch state after a failed call WITHOUT losing the last
+ * confirmed balance — it stays visible, explicitly labeled stale, never live.
+ */
+export function failedFetch(prev: FetchState): FetchState {
+  if (prev?.ok) return { ok: false, lastGood: { balance: prev.balance, at: prev.at } };
+  if (prev && !prev.ok) return prev;
+  return { ok: false };
 }
 
 export function balanceView(inputs: BalanceInputs): BalanceView {
   const { connection, lastFetch } = inputs;
-  if (connection === 'Disconnected') {
-    if (lastFetch?.ok) {
-      return {
-        kind: 'stale',
-        balance: lastFetch.balance,
-        confirmedAt: lastFetch.at,
-        redeemEnabled: false,
-        statusLine: `Offline — balance last confirmed ${formatTime(lastFetch.at)}. Redemption disabled.`,
-      };
-    }
-    return {
-      kind: 'unavailable',
-      redeemEnabled: false,
-      statusLine: 'Offline — balance unavailable. Redemption disabled.',
-    };
-  }
-  if (lastFetch === undefined) {
+  if (lastFetch === undefined && connection === 'Connected') {
     return { kind: 'loading', redeemEnabled: false, statusLine: 'Checking balance…' };
   }
-  if (!lastFetch.ok) {
+  if (lastFetch?.ok && connection === 'Connected') {
     return {
-      kind: 'unavailable',
+      kind: 'live',
+      balance: lastFetch.balance,
+      confirmedAt: lastFetch.at,
+      redeemEnabled: true,
+      statusLine: `Live balance, confirmed ${formatTime(lastFetch.at)}.`,
+    };
+  }
+  // Everything below is some flavor of "not live": redemption disabled, and a
+  // number is shown only with an explicit last-confirmed label.
+  const cached = lastFetch?.ok
+    ? { balance: lastFetch.balance, at: lastFetch.at }
+    : lastFetch && !lastFetch.ok
+      ? lastFetch.lastGood
+      : undefined;
+  const prefix =
+    connection === 'Disconnected' ? 'Offline' : "Can't reach the loyalty service";
+  if (cached) {
+    return {
+      kind: 'stale',
+      balance: cached.balance,
+      confirmedAt: cached.at,
       redeemEnabled: false,
-      statusLine: "Can't reach the loyalty service. Redemption disabled — try again.",
+      statusLine: `${prefix} — balance last confirmed ${formatTime(cached.at)}. Redemption disabled.`,
     };
   }
   return {
-    kind: 'live',
-    balance: lastFetch.balance,
-    confirmedAt: lastFetch.at,
-    redeemEnabled: true,
-    statusLine: `Live balance, confirmed ${formatTime(lastFetch.at)}.`,
+    kind: 'unavailable',
+    redeemEnabled: false,
+    statusLine: `${prefix} — balance unavailable. Redemption disabled.`,
   };
 }
 

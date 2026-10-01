@@ -1,0 +1,19 @@
+{
+  "name": "@loyalty/pos-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "preact": "^10.24.0"
+  },
+  "devDependencies": {
+    "@shopify/ui-extensions": "~2026.7.4",
+    "@shopify/ui-extensions-tester": "~2026.7.0",
+    "@testing-library/preact": "^3.2.4",
+    "jsdom": "^30.0.0"
+  }
+}

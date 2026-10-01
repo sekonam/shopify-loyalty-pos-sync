@@ -1,0 +1,20 @@
+api_version = "2026-07"
+
+[[extensions]]
+uid = "cb11cf00-92e7-4a71-b06c-ac6ad2d85e6b"
+type = "ui_extension"
+name = "Loyalty POS"
+handle = "loyalty-pos"
+description = "Cross-channel loyalty balance and redemption at the POS register"
+
+[[extensions.targeting]]
+module = "./src/Block.tsx"
+target = "pos.customer-details.block.render"
+
+[[extensions.targeting]]
+module = "./src/MenuItem.tsx"
+target = "pos.customer-details.action.menu-item.render"
+
+[[extensions.targeting]]
+module = "./src/Action.tsx"
+target = "pos.customer-details.action.render"

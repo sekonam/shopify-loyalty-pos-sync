@@ -17,7 +17,32 @@ export interface AppDeps extends WebhookDeps {
   apiKey: string;
 }
 
-type Env = { Variables: { shopDomain: string } };
+type Env = { Variables: { shopDomain: string; tokenSub: string | undefined } };
+
+const isCustomerGid = (s: string | undefined): s is string =>
+  typeof s === 'string' && s.startsWith('gid://shopify/Customer/');
+
+/**
+ * Who is this call about? A checkout session token carries the signed-in
+ * customer as `sub` — that identity wins, and a mismatching explicit
+ * customerId is refused. A POS/staff token has no customer sub, so the
+ * caller must name the customer explicitly (staff acting on a customer).
+ */
+function resolveCustomerId(
+  tokenSub: string | undefined,
+  requested: string | undefined,
+): { ok: true; customerId: string } | { ok: false; status: 400 | 403; error: string } {
+  if (isCustomerGid(tokenSub)) {
+    if (requested !== undefined && requested !== tokenSub) {
+      return { ok: false, status: 403, error: 'customerId does not match the session customer' };
+    }
+    return { ok: true, customerId: tokenSub };
+  }
+  if (requested === undefined) {
+    return { ok: false, status: 400, error: 'customerId required for this session' };
+  }
+  return { ok: true, customerId: requested };
+}
 
 export function createApp(deps: AppDeps): Hono<Env> {
   const app = new Hono<Env>();
@@ -61,6 +86,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
     try {
       const claims = await verifySessionToken(token, deps.apiSecret, deps.apiKey);
       c.set('shopDomain', claims.shopDomain);
+      c.set('tokenSub', claims.userId);
     } catch {
       return c.json({ error: 'invalid session token' }, 401);
     }
@@ -68,8 +94,9 @@ export function createApp(deps: AppDeps): Hono<Env> {
   });
 
   api.get('/balance', async (c) => {
-    const customerId = c.req.query('customerId');
-    if (!customerId) return c.json({ error: 'customerId required' }, 400);
+    const resolved = resolveCustomerId(c.get('tokenSub'), c.req.query('customerId'));
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+    const customerId = resolved.customerId;
     const shopDomain = c.get('shopDomain');
     const [balance, settings] = await Promise.all([
       deps.ledger.balance(shopDomain, customerId),
@@ -101,19 +128,25 @@ export function createApp(deps: AppDeps): Hono<Env> {
     } catch {
       return c.json({ error: 'invalid JSON body' }, 400);
     }
-    const { customerId, points, attemptId, channel } = body;
+    const { points, attemptId, channel } = body;
     if (
-      !customerId ||
       !attemptId ||
       !Number.isInteger(points) ||
       (channel !== 'web' && channel !== 'pos') ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(attemptId)
     ) {
       return c.json(
-        { error: 'customerId, integer points, uuid attemptId, channel web|pos required' },
+        { error: 'integer points, uuid attemptId, channel web|pos required' },
         400,
       );
     }
+    const tokenSub = c.get('tokenSub');
+    if (channel === 'web' && !isCustomerGid(tokenSub)) {
+      return c.json({ error: 'web redemption requires a signed-in customer session' }, 403);
+    }
+    const resolved = resolveCustomerId(tokenSub, body.customerId);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+    const customerId = resolved.customerId;
     const settings = await deps.settings.get(shopDomain);
     const result = await deps.ledger.redeem({
       shopDomain,

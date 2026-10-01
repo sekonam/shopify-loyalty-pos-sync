@@ -1,0 +1,18 @@
+query CartInput {
+  cart {
+    redeemAmount: attribute(key: "loyalty_discount") {
+      value
+    }
+    redeemAttempt: attribute(key: "loyalty_attempt") {
+      value
+    }
+    cost {
+      subtotalAmount {
+        amount
+      }
+    }
+  }
+  discount {
+    discountClasses
+  }
+}

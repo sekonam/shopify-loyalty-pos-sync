@@ -1,0 +1,22 @@
+api_version = "2026-07"
+
+[[extensions]]
+uid = "3f6a1f60-55b3-4b2e-9a51-7f1f1f1d9b01"
+name = "Loyalty balance"
+handle = "loyalty-balance"
+type = "ui_extension"
+description = "Shows the customer's loyalty balance at checkout and applies a points redemption"
+
+  [extensions.capabilities]
+  api_access = true
+  network_access = true
+
+  [[extensions.targeting]]
+  module = "./src/Checkout.tsx"
+  target = "purchase.checkout.block.render"
+
+[settings]
+  [[settings.fields]]
+  key = "backend_url"
+  type = "single_line_text_field"
+  name = "Loyalty backend URL"

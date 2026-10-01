@@ -1,0 +1,17 @@
+api_version = "2026-07"
+
+[[extensions]]
+uid = "782c2d87-bcd7-4ee1-ab41-c026b3997223"
+name = "Loyalty points discount"
+handle = "loyalty-discount"
+type = "function"
+description = "Applies the points redemption confirmed by the loyalty backend as an order discount"
+
+  [[extensions.targeting]]
+  target = "cart.lines.discounts.generate.run"
+  input_query = "src/cart_lines_discounts_generate_run.graphql"
+  export = "cart-lines-discounts-generate-run"
+
+  [extensions.build]
+  command = ""
+  path = "dist/function.wasm"

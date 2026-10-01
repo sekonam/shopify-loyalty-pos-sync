@@ -172,6 +172,88 @@ describe('POST /api/redeem', () => {
   });
 });
 
+describe('customer identity resolution', () => {
+  const customerToken = () => sessionToken(SHOP, { sub: CUSTOMER });
+
+  it('a customer-sub token needs no explicit customerId', async () => {
+    const { app } = makeApp();
+    await app.request(webhookRequest('orders/paid', paidOrder()));
+    const res = await app.request(await authed('/balance', {}, await customerToken()));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { balance: number }).balance).toBe(50);
+  });
+
+  it('a customer-sub token cannot read or redeem another customer', async () => {
+    const { app } = makeApp();
+    const res = await app.request(
+      await authed(
+        `/balance?customerId=${encodeURIComponent('gid://shopify/Customer/999')}`,
+        {},
+        await customerToken(),
+      ),
+    );
+    expect(res.status).toBe(403);
+    const redeem = await app.request(
+      await authed(
+        '/redeem',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            customerId: 'gid://shopify/Customer/999',
+            points: 100,
+            attemptId: randomUUID(),
+            channel: 'web',
+          }),
+          headers: { 'content-type': 'application/json' },
+        },
+        await customerToken(),
+      ),
+    );
+    expect(redeem.status).toBe(403);
+  });
+
+  it('web redemption without a signed-in customer session is refused', async () => {
+    const { app } = makeApp();
+    const res = await app.request(
+      await authed('/redeem', {
+        method: 'POST',
+        body: JSON.stringify({
+          customerId: CUSTOMER,
+          points: 100,
+          attemptId: randomUUID(),
+          channel: 'web',
+        }),
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('a staff token (no customer sub) must name the customer', async () => {
+    const { app } = makeApp();
+    const res = await app.request(await authed('/balance'));
+    expect(res.status).toBe(400);
+  });
+
+  it('the full checkout flow works from the token alone', async () => {
+    const { app, deps } = makeApp();
+    await app.request(webhookRequest('orders/paid', paidOrder({ total_price: '300.00' })));
+    const res = await app.request(
+      await authed(
+        '/redeem',
+        {
+          method: 'POST',
+          body: JSON.stringify({ points: 200, attemptId: randomUUID(), channel: 'web' }),
+          headers: { 'content-type': 'application/json' },
+        },
+        await customerToken(),
+      ),
+    );
+    expect(res.status).toBe(200);
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(100);
+  });
+});
+
 describe('settings and export', () => {
   it('round-trips settings with validation', async () => {
     const { app } = makeApp();

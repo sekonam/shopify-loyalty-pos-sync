@@ -12,7 +12,8 @@ niche clears this project's own concentration bar (top-3 by reviews ≈54%, comp
 "Room" example in CLAUDE.md's own table) and has a real price-ceiling lever — order-volume-gated
 tiers reaching $100-199+/month — that WooCommerce's identical niche structurally lacks. This
 round confirmed the submission gate is cheap and self-serve (no fee, no mandatory security audit,
-0% revenue share on the first $1M/year), confirmed the core technical differentiator is buildable
+0% revenue share on the first $1M/year — *round 96 correction, 2026-10-01: there is a one-time
+$19 USD App Store registration fee per Partner account; still cheap, not zero*), confirmed the core technical differentiator is buildable
 using Shopify's own documented POS UI Extension and Checkout Function APIs (not blocked the way
 several other ideas in this repo were), and pulled a larger review sample to convert "POS sync is
 broken" into a concrete, ranked v1/v2 feature backlog.
@@ -46,7 +47,10 @@ incumbents still get it wrong, not a green light. See Validation status.
   `shopify.dev/docs/apps/launch/...`): no submission fee anywhere in the requirements docs, no
   mandatory third-party security audit (self-attested TLS/OAuth/minimal-scopes hygiene only,
   unlike Salesforce's $999 AppExchange security review), and a resubmission path with no stated
-  fee or cooldown. This is Atlassian-shaped, not Salesforce-shaped.
+  fee or cooldown. This is Atlassian-shaped, not Salesforce-shaped. *Round 96 correction
+  (2026-10-01): the revenue-share docs now state a one-time $19 USD App Store registration fee
+  per Partner account (applies even to unlisted-app review). One-time, not per-submission, not
+  recurring — the "cheap and self-serve" read stands, the "no fee" wording doesn't.*
 - **Revenue share confirmed directly** (this round, `shopify.dev/docs/apps/launch/distribution/
   revenue-share`): developers keep **100% of the first $1,000,000 USD in gross app revenue per
   year** (since Jan 1, 2025), **85% above that** (i.e. 15% Shopify take past $1M/yr) — plus a
@@ -150,6 +154,19 @@ competitive listing-copy pass. Round 95 also found Joy Loyalty's $129/mo tier ex
 "POS loyalty extension (in-store rewards)" with QR-code redemption — not hands-on tested by either
 round; see round-95's `docs/round-95-market-verification-independent.md` for why this needs a
 direct spike before any "no incumbent solves this" claim goes into listing copy or outreach.*
+
+*Round 96 (2026-10-01) re-pulled all counts: Smile 4,617 · BON 1,948 · Joy 1,790 (listing slug
+changed to `apps.shopify.com/joyio`; old `/joy-loyalty` 404s) · Appstle 1,405 (fastest grower, now
+Built for Shopify) · Kangaroo 56 · Rivo 1,448 (rating down to 4.7★) · Growave 1,296 · Love Loyalty
+371. No new 1-3★ POS/sync reviews appeared on any of the eight apps since mid-September, and no
+baseline defect shows a vendor fix. Three additions to track: (1) **Rivo/Firepot, 2025-09-03, 1★**
+— a mutable-balance failure that set ~23,000 customers' balances to zero overnight, the single best
+third-party evidence yet for the append-only-ledger thesis; (2) **Joy ships POS features roughly
+monthly** (wallet-pass QR enrollment, POS points tiles, store-credit earning through Sept 2026) —
+spike 0 is more load-bearing, not less; (3) two new watch-list entrants, **BLOY** (840 reviews,
+markets POS integration) and **Nector** (~89 reviews, markets "real-time sync between web and POS"
+— this app's wedge claim, verbatim, untested). See
+`docs/round-96-refresh-2026-10-01.md`.*
 
 **Price ceiling** (round 85): BON and Appstle both gate paid tiers on **monthly order volume**,
 not a flat SaaS fee — the Shopify analogue of Atlassian/monday's per-seat lever, reaching
@@ -294,6 +311,13 @@ advantage over WooCommerce's flat-pricing ceiling.
    check the POS-visible balance reflects it (and vice versa) on the same test store, to validate
    the two-surfaces-one-ledger architecture end-to-end before writing any customer-facing UI
    polish.
+6. **Added round 96 — native store-credit redemption rail:** 2026 ecosystem commentary describes
+   loyalty apps migrating redemption onto Shopify's native store-credit ledger (natively visible
+   at checkout in new customer accounts). Spike whether this app's redemption should convert
+   points → native store credit via the Admin API instead of a discount-based mechanism — it could
+   simplify both integration surfaces and future-proof against the platform, or founder on the
+   store-credit-at-POS reliability gaps 2026 community threads still describe. The points ledger
+   stays this app's own either way; only the redemption rail is in question.
 
 ---
 
@@ -453,6 +477,10 @@ file says so explicitly rather than picking a winner.
 - `apps.shopify.com/smile-io/reviews`, `apps.shopify.com/bon-loyalty-rewards/reviews`,
   `apps.shopify.com/appstle-loyalty/reviews` (all `?ratings[]=1&2&3`) — fetched 2026-09-17,
   quotes attributed to named stores with dates as shown above.
+- `docs/round-96-refresh-2026-10-01.md` (2026-10-01) — two-week re-verification of the full
+  baseline via three parallel passes: platform facts confirmed (with the $19-fee correction),
+  competitor counts/pricing confirmed within drift, demand signals strengthened (key thread live
+  into 2026, all named reviewers unresolved), store-credit watch item added.
 - `docs/round-95-market-verification-independent.md` (2026-09-18) — independent second-pass
   verification of review counts/pricing (confirmed), two additional competitors found (Rivo,
   Growave), Joy Loyalty's untested POS-extension marketing claim (new spike added above), four

@@ -5,7 +5,9 @@
 **Where this repository stands.** Nothing has been built. The idea has been through desk
 research and a passed kill test (see `PRODUCT-SPEC.md`), but no code exists, no Shopify Partner
 account has been created for this app, and — the single largest open risk — **no real customer
-has confirmed they'd pay for this.**
+has confirmed they'd pay for this.** A full re-verification on 2026-10-01 (round 96) confirmed
+the baseline still holds: all three named reviewers below are still live and unresolved, the key
+community thread is still accumulating replies into 2026, and no incumbent has shipped a fix.
 
 ## 0. One cheap check to run alongside the outreach below (round 95, 2026-09-18)
 
@@ -35,7 +37,9 @@ without one costs months.
 
 ## 2. What you need to actually build, once the test passes
 
-- A **Shopify Partner account** (free) and acceptance of the Partner Program Agreement.
+- A **Shopify Partner account** (free) and acceptance of the Partner Program Agreement, plus a
+  **one-time $19 USD App Store registration fee** per Partner account (round 96 correction —
+  earlier rounds said "no fee"; it's one-time, not per-submission or recurring).
 - **Payout/tax details** set up for Shopify Payments-linked revenue share (100% of the first
   $1M/year gross app revenue, 85% above that, plus Shopify's standard 2.9% payment-processing
   fee — confirmed directly from `shopify.dev` as of 2026-09-17).
@@ -53,8 +57,9 @@ without one costs months.
 
 ## 3. What's already de-risked, so you don't re-litigate it
 
-- **The submission gate is cheap and self-serve** — no fee, no mandatory third-party security
-  audit, confirmed directly from Shopify's current app-store-requirements docs.
+- **The submission gate is cheap and self-serve** — a one-time $19 registration fee (round 96
+  correction), no per-submission fee, no mandatory third-party security audit, confirmed directly
+  from Shopify's current app-store-requirements docs (re-confirmed 2026-10-01).
 - **The core technical differentiator is buildable** — Shopify's own POS UI Extensions docs name
   "loyalty program integration" as an explicit worked example for the Customer Details target.
   This was the riskiest assumption in the whole idea and it came back "yes, and here's the

@@ -16,7 +16,10 @@ plainly that "all the popular loyalty apps... fail to do this."
 > `docs/round-95-market-verification-independent.md` is a second-pass competitor/market re-check
 > (2026-09-18, extended with a third independent pass in its §7) that mostly confirms round 94 but
 > found a real gap: Joy Loyalty and Love Loyalty Points & Rewards already market in-store/POS
-> redemption, untested by any research pass — see `PRODUCT-SPEC.md`'s spike list. `CLAUDE.md` has
+> redemption, untested by any research pass — see `PRODUCT-SPEC.md`'s spike list.
+> `docs/round-96-refresh-2026-10-01.md` re-verified the whole baseline two weeks later: it holds
+> (one correction — a one-time $19 App Store registration fee), demand signals strengthened, and
+> a new open question was added (native store credit as the redemption rail). `CLAUDE.md` has
 > the standing engineering/workflow rules for anyone (or any Claude session) picking this up.
 
 **Current score:** P(≥$1,000 MRR by month 12) ≈ 8-10% — passed a real kill test against primary

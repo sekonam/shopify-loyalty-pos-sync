@@ -67,12 +67,11 @@ describe('earnEntryFromOrder', () => {
 describe('refundReversalEntry', () => {
   const refundBase = { ...base, refundId: 'gid://shopify/Refund/7', orderSourceName: 'web' };
 
-  it('reverses points for the refunded amount', () => {
+  it('reverses points for the refunded amount (uncapped — the store caps at write time)', () => {
     const entry = refundReversalEntry({
       ...refundBase,
       refundedAmount: '20.00',
       earnRate: '1',
-      currentBalance: 100,
     });
     expect(entry).toMatchObject({
       delta: -20,
@@ -82,26 +81,11 @@ describe('refundReversalEntry', () => {
     });
   });
 
-  it('caps the reversal so the balance cannot go negative from it alone', () => {
-    const entry = refundReversalEntry({
-      ...refundBase,
-      refundedAmount: '500.00',
-      earnRate: '1',
-      currentBalance: 30,
-    });
-    expect(entry?.delta).toBe(-30);
-  });
-
-  it('produces no entry when balance is zero or negative, or refund rounds to zero', () => {
+  it('produces no entry when the refund rounds to zero points', () => {
     expect(
-      refundReversalEntry({ ...refundBase, refundedAmount: '20.00', earnRate: '1', currentBalance: 0 }),
+      refundReversalEntry({ ...refundBase, refundedAmount: '0.50', earnRate: '1' }),
     ).toBeNull();
-    expect(
-      refundReversalEntry({ ...refundBase, refundedAmount: '20.00', earnRate: '1', currentBalance: -5 }),
-    ).toBeNull();
-    expect(
-      refundReversalEntry({ ...refundBase, refundedAmount: '0.50', earnRate: '1', currentBalance: 100 }),
-    ).toBeNull();
+    expect(refundReversalEntry({ ...refundBase, refundedAmount: '0', earnRate: '1' })).toBeNull();
   });
 });
 

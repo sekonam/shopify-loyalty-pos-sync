@@ -65,19 +65,16 @@ export interface RefundReversalInput {
   /** Amount refunded, as a decimal string. */
   refundedAmount: string;
   earnRate: string;
-  /** The customer's balance at the moment of the write (the store re-reads it inside the transaction). */
-  currentBalance: number;
 }
 
 /**
- * reversal delta = -min(floor(refundedAmount * earnRate), max(currentBalance, 0)):
- * a reversal claws back points earned on the refunded amount, but is capped so it
- * can never push the balance below zero on its own (TECHNICAL-SPEC §2). Returns
- * null when nothing is reversible.
+ * reversal delta = -floor(refundedAmount * earnRate), uncapped. Write it with
+ * LedgerStore.appendCapped, which re-reads the balance inside the atomic write
+ * and caps the magnitude so a reversal alone can never push a balance below
+ * zero (TECHNICAL-SPEC §2). Returns null when the refund rounds to zero points.
  */
 export function refundReversalEntry(input: RefundReversalInput): LedgerEntryDraft | null {
-  const earned = floorProduct(input.refundedAmount, input.earnRate);
-  const reversible = Math.min(earned, Math.max(input.currentBalance, 0));
+  const reversible = floorProduct(input.refundedAmount, input.earnRate);
   if (reversible <= 0) return null;
   const { sourceName, rawSourceName } = normalizeSourceName(input.orderSourceName);
   return {

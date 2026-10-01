@@ -38,19 +38,34 @@ scope is exactly that: get the ledger right, everywhere, before anything else.
 
 ## Quick start
 
-Not yet — no code exists. See `docs/START-HERE.md` for what has to happen before there's a
-`pnpm install` step worth writing.
-
-## Repo layout (planned, per the dossier's Technical architecture)
-
-```
-packages/ledger          the append-only points ledger — no platform dependencies
-packages/shopify-backend  webhook ingestion (orders/paid, refunds/create), the authoritative service
-apps/checkout-extension   Shopify Function (discount) + Checkout UI extension
-apps/pos-extension        POS UI extension, Customer Details target
-docs/                     PRODUCT-SPEC.md (the dossier), START-HERE.md, TECHNICAL-SPEC.md (schema,
-                          webhook contracts, write path), PRODUCT-PERSPECTIVES.md, round-*.md
+```sh
+pnpm install
+pnpm test        # 99 tests; the Postgres suite needs Docker (SKIP_PG_TESTS=1 to skip)
+pnpm typecheck
 ```
 
-Nothing under `packages/` or `apps/` exists yet — this is the intended shape, not the current
-state.
+Run the backend locally: copy `.env.example` to `.env`, point `DATABASE_URL` at a Postgres,
+then `pnpm --filter @loyalty/shopify-backend dev` (migrations apply on boot; the embedded admin
+is at `/admin`).
+
+**Built 2026-10-01, local-first** (owner waived the validation gate — recorded in
+`docs/START-HERE.md`): the full v1 codebase exists with tests, but has never run against a real
+Shopify store. What still needs a Partner account: creating the app (`shopify app config push`
+with the real `client_id` in `shopify.app.toml`), building the Function wasm + deploying the
+extensions (`shopify app deploy`), the managed-install token exchange, and the dev-store spikes
+in `docs/PRODUCT-SPEC.md` (webhook latency, real-POS offline behavior, incumbent POS testing).
+
+## Repo layout
+
+```
+packages/ledger           the append-only points ledger — no platform dependencies; the
+                          InMemoryLedgerStore is the executable spec for the SQL store
+packages/shopify-backend  the authoritative service: webhook ingestion (orders/paid,
+                          refunds/create, GDPR trio), atomic redemption API, reconciliation
+                          job + scheduler, embedded admin page
+apps/checkout-extension   discount Function (unified Discount API) + checkout UI block
+apps/pos-extension        POS UI extension (customer-details block + redeem action),
+                          disable-when-offline
+docs/                     PRODUCT-SPEC.md (the dossier), START-HERE.md, TECHNICAL-SPEC.md,
+                          PRODUCT-PERSPECTIVES.md, round-*.md
+```

@@ -24,7 +24,7 @@ say so explicitly and ask for confirmation it happened, rather than silently pro
 research, spikes against Shopify's own documentation, and throwaway dev-store experiments are all
 fine to do regardless — it's *production build effort* that's gated.
 
-## Repo shape (planned — see README.md, not yet built)
+## Repo shape (built 2026-10-01 — see README.md for status and what still needs a Partner account)
 
 ```
 packages/ledger           append-only points ledger, no platform dependencies

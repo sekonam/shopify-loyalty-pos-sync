@@ -1,9 +1,26 @@
 # Technical specification (v1)
 
 This is the implementable layer under `PRODUCT-SPEC.md`'s Technical architecture section — actual
-schemas, webhook contracts, and extension surfaces, not a sketch. Nothing here has been built or
-tested against a real dev store yet; treat field names/types as a starting draft to validate
-against Shopify's current GraphQL Admin schema during the spike phase, not as frozen.
+schemas, webhook contracts, and extension surfaces, not a sketch.
+
+> **2026-10-01 — implemented.** The v1 codebase now exists (local-first, never run against a real
+> store; see `README.md`). Where the implementation deliberately deviates from this draft:
+> - **Reconciliation idempotency keys** (§3/§5): corrections use the *canonical* webhook keys
+>   (`order_paid:`/`refund:`) with `reason = 'reconciliation'`, not a `reconcile:` key — that is
+>   what actually makes a late webhook after a correction (and vice versa) a structural no-op.
+> - **`source_name` is an open set** (§1): Shopify emits channel handles and app ids beyond
+>   web/pos/iphone/android, so the schema adds `'other'` plus a `raw_source_name` column that
+>   preserves the original value verbatim instead of guessing.
+> - **Reversal capping is atomic** (§2/§4): the cap-at-balance happens inside the store's
+>   critical section (`appendCapped`), not at payload-handling time.
+> - **Refund customer/channel resolution**: `refunds/create` carries no customer — both come from
+>   the order's own earn entry in the ledger; a refund arriving before its order is left for the
+>   reconciliation job (delivery ordering is explicitly not guaranteed by Shopify).
+> - **Checkout identity**: web balance/redeem calls derive the customer from the session token's
+>   `sub` claim server-side; a checkout client cannot name an arbitrary `customerId`.
+> - **§7's offline question is resolved**: v1 disables POS redemption when the backend isn't
+>   reachable live (owner decision, 2026-10-01); the queue-and-reconcile design below remains the
+>   documented v1.x path.
 
 ## 1. Data model
 

@@ -24,25 +24,45 @@ const isCustomerGid = (s: string | undefined): s is string =>
   typeof s === 'string' && s.startsWith('gid://shopify/Customer/');
 
 /**
- * Who is this call about? A checkout session token carries the signed-in
- * customer as `sub` — that identity wins, and a mismatching explicit
- * customerId is refused. A POS/staff token has no customer sub, so the
- * caller must name the customer explicitly (staff acting on a customer).
+ * Token classification is an ALLOWLIST, never a denylist. A checkout token
+ * for a signed-in customer carries the customer gid as `sub`; POS staff and
+ * admin (App Bridge) tokens carry a numeric Shopify user id. A token with no
+ * sub — e.g. a signed-out checkout visitor's session token, which is still
+ * validly signed — is 'anonymous' and gets access to NOTHING identity-bound:
+ * treating it as staff would let any storefront visitor read balances, spend
+ * other customers' points, or rewrite shop settings.
+ */
+type TokenKind = 'customer' | 'staff' | 'anonymous';
+
+function tokenKind(sub: string | undefined): TokenKind {
+  if (isCustomerGid(sub)) return 'customer';
+  if (typeof sub === 'string' && /^\d+$/.test(sub)) return 'staff';
+  return 'anonymous';
+}
+
+/**
+ * Who is this call about? A customer token is bound to its own customer (a
+ * mismatching explicit customerId is refused); a staff token acts on an
+ * explicitly named customer; an anonymous token on nobody.
  */
 function resolveCustomerId(
   tokenSub: string | undefined,
   requested: string | undefined,
 ): { ok: true; customerId: string } | { ok: false; status: 400 | 403; error: string } {
-  if (isCustomerGid(tokenSub)) {
-    if (requested !== undefined && requested !== tokenSub) {
-      return { ok: false, status: 403, error: 'customerId does not match the session customer' };
-    }
-    return { ok: true, customerId: tokenSub };
+  switch (tokenKind(tokenSub)) {
+    case 'customer':
+      if (requested !== undefined && requested !== tokenSub) {
+        return { ok: false, status: 403, error: 'customerId does not match the session customer' };
+      }
+      return { ok: true, customerId: tokenSub as string };
+    case 'staff':
+      if (requested === undefined) {
+        return { ok: false, status: 400, error: 'customerId required for a staff session' };
+      }
+      return { ok: true, customerId: requested };
+    case 'anonymous':
+      return { ok: false, status: 403, error: 'a signed-in customer or staff session is required' };
   }
-  if (requested === undefined) {
-    return { ok: false, status: 400, error: 'customerId required for this session' };
-  }
-  return { ok: true, customerId: requested };
 }
 
 export function createApp(deps: AppDeps): Hono<Env> {
@@ -156,8 +176,14 @@ export function createApp(deps: AppDeps): Hono<Env> {
       );
     }
     const tokenSub = c.get('tokenSub');
-    if (channel === 'web' && !isCustomerGid(tokenSub)) {
+    const kind = tokenKind(tokenSub);
+    // Channel/identity pairing is strict: web redemptions only for the
+    // signed-in customer the token names; POS redemptions only by staff.
+    if (channel === 'web' && kind !== 'customer') {
       return c.json({ error: 'web redemption requires a signed-in customer session' }, 403);
+    }
+    if (channel === 'pos' && kind !== 'staff') {
+      return c.json({ error: 'pos redemption requires a staff session' }, 403);
     }
     const resolved = resolveCustomerId(tokenSub, body.customerId);
     if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
@@ -189,7 +215,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
   // carry a staff user sub instead and pass.
   const merchant = new Hono<Env>();
   merchant.use('*', async (c, next) => {
-    if (isCustomerGid(c.get('tokenSub'))) {
+    if (tokenKind(c.get('tokenSub')) !== 'staff') {
       return c.json({ error: 'merchant session required' }, 403);
     }
     return next();

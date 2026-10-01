@@ -275,10 +275,66 @@ describe('customer identity resolution', () => {
     expect(res.status).toBe(403);
   });
 
-  it('a staff token (no customer sub) must name the customer', async () => {
+  it('a staff token (numeric sub) must name the customer', async () => {
     const { app } = makeApp();
     const res = await app.request(await authed('/balance'));
     expect(res.status).toBe(400);
+  });
+
+  it('an anonymous token (signed-out checkout: no sub) gets nothing identity-bound', async () => {
+    const { app, deps } = makeApp();
+    await app.request(webhookRequest('orders/paid', paidOrder()));
+    const anon = await sessionToken(SHOP, { sub: undefined });
+    // Cannot read any balance, own or named:
+    expect((await app.request(await authed('/balance', {}, anon))).status).toBe(403);
+    expect(
+      (
+        await app.request(
+          await authed(`/balance?customerId=${encodeURIComponent(CUSTOMER)}`, {}, anon),
+        )
+      ).status,
+    ).toBe(403);
+    // Cannot redeem on either channel:
+    for (const channel of ['web', 'pos']) {
+      const res = await app.request(
+        await authed(
+          '/redeem',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              customerId: CUSTOMER,
+              points: 50,
+              attemptId: randomUUID(),
+              channel,
+            }),
+            headers: { 'content-type': 'application/json' },
+          },
+          anon,
+        ),
+      );
+      expect(res.status, channel).toBe(403);
+    }
+    // Cannot touch merchant routes:
+    expect((await app.request(await authed('/settings', {}, anon))).status).toBe(403);
+    expect((await app.request(await authed('/entries', {}, anon))).status).toBe(403);
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(50); // untouched
+  });
+
+  it('a customer token cannot redeem through the pos channel', async () => {
+    const { app } = makeApp();
+    await app.request(webhookRequest('orders/paid', paidOrder({ total_price: '300.00' })));
+    const res = await app.request(
+      await authed(
+        '/redeem',
+        {
+          method: 'POST',
+          body: JSON.stringify({ points: 100, attemptId: randomUUID(), channel: 'pos' }),
+          headers: { 'content-type': 'application/json' },
+        },
+        await sessionToken(SHOP, { sub: CUSTOMER }),
+      ),
+    );
+    expect(res.status).toBe(403);
   });
 
   it('the full checkout flow works from the token alone', async () => {

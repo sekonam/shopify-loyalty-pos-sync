@@ -30,17 +30,25 @@ export function makeApp(deps = makeDeps()) {
   return { app: createApp(deps), deps };
 }
 
+/**
+ * Default token is a STAFF session (numeric sub, like POS/admin tokens).
+ * Pass { sub: '<customer gid>' } for a customer token, or { sub: undefined }
+ * for an anonymous token (e.g. a signed-out checkout visitor).
+ */
 export async function sessionToken(
   shop = SHOP,
   overrides: Record<string, unknown> = {},
   secret = API_SECRET,
 ): Promise<string> {
-  return new SignJWT({
+  const payload: Record<string, unknown> = {
     dest: `https://${shop}`,
     aud: API_KEY,
     jti: randomUUID(),
+    sub: '5551001',
     ...overrides,
-  })
+  };
+  if (payload['sub'] === undefined) delete payload['sub'];
+  return new SignJWT(payload)
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setNotBefore('0s')

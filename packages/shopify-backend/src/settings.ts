@@ -64,13 +64,13 @@ export class PgSettingsStore implements SettingsStore {
     const { rows } = await this.db.query(
       `insert into shop_settings (shop_domain, earn_rate, redemption_rate, min_redemption)
        values ($1,
-               coalesce($2, 1),
-               coalesce($3, 100),
-               coalesce($4, 100))
+               coalesce($2::numeric, 1),
+               coalesce($3::numeric, 100),
+               coalesce($4::int, 100))
        on conflict (shop_domain) do update set
-         earn_rate       = coalesce($2, shop_settings.earn_rate),
-         redemption_rate = coalesce($3, shop_settings.redemption_rate),
-         min_redemption  = coalesce($4, shop_settings.min_redemption),
+         earn_rate       = coalesce($2::numeric, shop_settings.earn_rate),
+         redemption_rate = coalesce($3::numeric, shop_settings.redemption_rate),
+         min_redemption  = coalesce($4::int, shop_settings.min_redemption),
          uninstalled_at  = null
        returning *`,
       [shopDomain, patch.earnRate ?? null, patch.redemptionRate ?? null, patch.minRedemption ?? null],

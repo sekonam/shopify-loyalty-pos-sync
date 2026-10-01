@@ -2,6 +2,16 @@
 
 > Read this first. It answers one question: **what is actually needed to start?**
 
+> **2026-10-01 — validation gate explicitly waived by the owner.** Per `CLAUDE.md`'s standing
+> rule, the build was not started silently: the gate was raised as a direct question and the
+> owner chose "waive the gate, build anyway" (session decision, recorded here). Implementation
+> proceeds local-first (no Partner account yet — full codebase + test suite against mocks; real-
+> store verification deferred until an account exists). The kill test below is **still the top
+> go-to-market priority** — waiving it changes the build order, not the risk it measures. Two
+> further decisions made the same day: v1 POS offline handling = disable-redemption-when-offline
+> (TECHNICAL-SPEC §7 resolved toward the simpler option), and v1 redemption rail = discount-based
+> as spec'd (store-credit rail stays a spike for when a dev store exists).
+
 **Where this repository stands.** Nothing has been built. The idea has been through desk
 research and a passed kill test (see `PRODUCT-SPEC.md`), but no code exists, no Shopify Partner
 account has been created for this app, and — the single largest open risk — **no real customer

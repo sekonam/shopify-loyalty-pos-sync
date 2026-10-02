@@ -61,6 +61,10 @@ ${faviconLink()}
         <p class="card-description">The newest entries in the points ledger.</p>
       </div><div class="row-end"><button class="btn btn-plain btn-sm" type="button" data-goto="ledger">View all</button></div></div>
       <div class="table-wrap"><table class="data" id="recent"><tbody></tbody></table></div>
+      <div id="recent-empty" class="empty" hidden>
+        <div class="empty-title">No points activity yet</div>
+        <div>Points appear here the moment an order is paid — online or at the register.</div>
+      </div>
     </div>
   </section>
 
@@ -220,8 +224,8 @@ ${faviconLink()}
         <tbody></tbody>
       </table></div>
       <div id="entries-empty" class="empty" hidden>
-        <div class="empty-title">Nothing to show</div>
-        <div>No ledger entries match these filters.</div>
+        <div class="empty-title" id="entries-empty-title"></div>
+        <div id="entries-empty-body"></div>
       </div>
       <div class="card-footer"><button class="btn" id="loadMore" type="button" hidden>Show more</button><span class="field-help" id="shown-count"></span></div>
     </div>
@@ -623,15 +627,24 @@ function renderEntries() {
   tbody.textContent = '';
   for (const e of rows.slice(0, state.shown)) tbody.appendChild(entryRow(e));
   $('entries-empty').hidden = rows.length > 0;
+  // A shop with no entries at all is a new install, not a failed search.
+  const fresh = state.entries.length === 0;
+  $('entries-empty-title').textContent = fresh ? 'No points activity yet' : 'Nothing matches';
+  $('entries-empty-body').textContent = fresh
+    ? 'Every earn, redemption, and refund reversal will be listed here as it happens.'
+    : 'Try a different customer, reason, or channel.';
   $('loadMore').hidden = rows.length <= state.shown;
   $('shown-count').textContent = rows.length
     ? 'Showing ' + Math.min(state.shown, rows.length) + ' of ' + nf.format(rows.length)
     : '';
-  $('ledger-count').textContent = nf.format(state.entries.length) + ' entries, newest first.';
+  $('ledger-count').textContent = fresh
+    ? 'Nothing recorded yet.'
+    : nf.format(state.entries.length) + ' entries, newest first.';
 
   const recent = document.querySelector('#recent tbody');
   recent.textContent = '';
   for (const e of state.entries.slice(0, 6)) recent.appendChild(entryRow(e));
+  $('recent-empty').hidden = state.entries.length > 0;
 }
 for (const id of ['filter-customer', 'filter-reason', 'filter-channel']) {
   $(id).addEventListener('input', () => { state.shown = PAGE_SIZE; renderEntries(); });

@@ -16,7 +16,11 @@ const SECRET = process.env['SHOPIFY_API_SECRET'] ?? 'test-secret';
 const API_KEY = process.env['SHOPIFY_API_KEY'] ?? 'test-client-id';
 const SHOP = process.env['DEV_SHOP'] ?? 'loyalty-e2e.myshopify.com';
 
-// Deterministic PRNG so reruns generate the same dataset.
+// Run-scoped ids: every rerun works against its own fresh customers/orders,
+// so the oracle's from-zero arithmetic holds on a shared, dirty database.
+const RUN = Date.now() % 1_000_000;
+
+// Deterministic PRNG so a given run generates a reproducible dataset shape.
 let seed = 0x5eedf00d;
 const rand = () => {
   seed = (seed * 1664525 + 1013904223) >>> 0;
@@ -90,7 +94,7 @@ async function redeem(
   }, customerId);
 }
 
-const gid = (n: number) => `gid://shopify/Customer/${n}`;
+const gid = (n: number) => `gid://shopify/Customer/${RUN}${n}`;
 const orderPayload = (id: number, customer: number | null, total: string, source: string, extra: Record<string, unknown> = {}) => ({
   id,
   admin_graphql_api_id: `gid://shopify/Order/${id}`,
@@ -105,7 +109,7 @@ const orderPayload = (id: number, customer: number | null, total: string, source
 // ---------- phases ----------
 async function phaseOrders() {
   const sources = ['web', 'pos', 'pos', 'web', 'iphone', 'shopify_draft_order'];
-  let orderId = 100000;
+  let orderId = RUN * 1000;
   let sent = 0;
   const batch: Promise<void>[] = [];
   for (let i = 0; i < 300; i++) {
@@ -120,6 +124,7 @@ async function phaseOrders() {
       const earn = Math.floor(Number(total));
       if (earn > 0) {
         add(gid(customer), earn);
+        orderEarned.set(id, earn);
         expectedEntries++;
       }
     }
@@ -133,6 +138,10 @@ async function phaseOrders() {
   console.log(`orders sent: ${sent}`);
 }
 const orders: Array<{ id: number; customer: number | null; total: string; isTest: boolean }> = [];
+// Per-order earned/reversed, mirroring the product invariant: refunds for an
+// order can never reverse more than that order earned.
+const orderEarned = new Map<number, number>();
+const orderReversed = new Map<number, number>();
 
 async function phaseIdempotency() {
   // Redeliver an existing order under the SAME webhook id → duplicate.
@@ -185,7 +194,7 @@ async function phaseRedemptions() {
 }
 
 async function phaseRefunds() {
-  let refundId = 700000;
+  let refundId = RUN * 1000 + 700000;
   let reversed = 0;
   const refundable = orders.filter((o) => o.customer !== null && !o.isTest).slice(0, 60);
   for (const o of refundable) {
@@ -201,16 +210,28 @@ async function phaseRefunds() {
       transactions: [{ kind: 'refund', status: 'success', amount }],
     });
     refundId++;
-    const expected = Math.min(Math.floor(Number(amount)), Math.max(bal(customer), 0));
+    // Product invariant mirrored: refund reversal = min(amount-derived points,
+    // what the ORDER still has reversible, the customer's positive balance).
+    const orderCap = (orderEarned.get(o.id) ?? 0) - (orderReversed.get(o.id) ?? 0);
+    const byOrder = Math.min(Math.floor(Number(amount)), orderCap);
+    if (byOrder <= 0) {
+      check(
+        action.includes('nothing reversible') || action.includes('no earn entry'),
+        `refund with exhausted order cap: got '${action}'`,
+      );
+      continue;
+    }
+    const expected = Math.min(byOrder, Math.max(bal(customer), 0));
     if (expected > 0) {
       check(action === `reversed ${expected}`, `refund ${amount} of order ${o.id}: expected 'reversed ${expected}', got '${action}'`);
       add(customer, -expected);
+      orderReversed.set(o.id, (orderReversed.get(o.id) ?? 0) + expected);
       expectedEntries++;
       reversed++;
     } else {
       check(
-        action.includes('capped to zero') || action.includes('zero points'),
-        `refund with nothing reversible: got '${action}'`,
+        action.includes('capped to zero'),
+        `refund with no positive balance: got '${action}'`,
       );
     }
   }
@@ -224,6 +245,7 @@ async function phaseRefunds() {
     transactions: [],
   });
   check(action.includes('no refunded amount'), `restock-only refund: '${action}'`);
+  console.log(`per-order reversal caps exercised on ${orderReversed.size} orders`);
 }
 
 async function phaseOutOfOrder() {
@@ -231,19 +253,19 @@ async function phaseOutOfOrder() {
   // redelivered (as Shopify's retry would) and then applies.
   const customer = 9031;
   const before = await webhook('refunds/create', {
-    id: 710001,
-    admin_graphql_api_id: 'gid://shopify/Refund/710001',
-    order_id: 200001,
+    id: RUN * 1000 + 710001,
+    admin_graphql_api_id: `gid://shopify/Refund/${RUN * 1000 + 710001}`,
+    order_id: RUN * 1000 + 900001,
     transactions: [{ kind: 'refund', status: 'success', amount: '10.00' }],
   });
   check(before.includes('no earn entry'), `refund-before-order: '${before}'`);
-  await webhook('orders/paid', orderPayload(200001, customer, '80.00', 'pos'));
+  await webhook('orders/paid', orderPayload(RUN * 1000 + 900001, customer, '80.00', 'pos'));
   add(gid(customer), 80);
   expectedEntries++;
   const after = await webhook('refunds/create', {
-    id: 710001,
-    admin_graphql_api_id: 'gid://shopify/Refund/710001',
-    order_id: 200001,
+    id: RUN * 1000 + 710001,
+    admin_graphql_api_id: `gid://shopify/Refund/${RUN * 1000 + 710001}`,
+    order_id: RUN * 1000 + 900001,
     transactions: [{ kind: 'refund', status: 'success', amount: '10.00' }],
   });
   check(after === 'reversed 10', `redelivered refund applies: '${after}'`);
@@ -255,12 +277,12 @@ async function phaseClawback() {
   // Forged discount attribute: order claims a 5.00 loyalty discount (=500
   // points) with no applied attempt → clawed back, capped at the balance.
   const customer = 9033;
-  await webhook('orders/paid', orderPayload(200002, customer, '120.00', 'web'));
+  await webhook('orders/paid', orderPayload(RUN * 1000 + 900002, customer, '120.00', 'web'));
   add(gid(customer), 120);
   expectedEntries++;
   const action = await webhook(
     'orders/paid',
-    orderPayload(200003, customer, '60.00', 'web', {
+    orderPayload(RUN * 1000 + 900003, customer, '60.00', 'web', {
       note_attributes: [
         { name: 'loyalty_discount', value: '5.00' },
         { name: 'loyalty_attempt', value: randomUUID() },
@@ -280,7 +302,7 @@ async function phaseClawback() {
 
 async function phaseRace() {
   const customer = 9032;
-  await webhook('orders/paid', orderPayload(200004, customer, '300.00', 'pos'));
+  await webhook('orders/paid', orderPayload(RUN * 1000 + 900004, customer, '300.00', 'pos'));
   add(gid(customer), 300);
   expectedEntries++;
   const [a, b] = await Promise.all([
@@ -326,7 +348,10 @@ async function phaseVerify() {
     checked++;
   }
   const entries = await api('/api/entries', 'staff');
-  const count = (entries.body['entries'] as unknown[]).length;
+  const runPrefix = `gid://shopify/Customer/${RUN}`;
+  const count = (entries.body['entries'] as Array<{ customerId: string }>).filter((e) =>
+    e.customerId.startsWith(runPrefix),
+  ).length;
   check(count === expectedEntries, `entry count: server ${count} vs oracle ${expectedEntries}`);
 
   const csvRes = await fetch(`${BASE}/api/ledger.csv`, {
@@ -338,7 +363,8 @@ async function phaseVerify() {
     lines[0] === 'id,customer_id,order_id,refund_id,source_name,delta,reason,created_at',
     'csv header',
   );
-  check(lines.length - 1 === expectedEntries, `csv rows ${lines.length - 1} vs ${expectedEntries}`);
+  const runRows = lines.filter((l) => l.includes(runPrefix)).length;
+  check(runRows === expectedEntries, `csv rows ${runRows} vs ${expectedEntries}`);
 
   console.log(`verified ${checked} customer balances, ${count} ledger entries, csv ok`);
 }

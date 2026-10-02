@@ -96,6 +96,7 @@ ${faviconLink()}
       </div>
       <div class="card-footer">
         <button class="btn btn-primary" id="saveCore" type="button">Save</button>
+        <span class="badge badge-warning" id="core-dirty" hidden>Unsaved</span>
         <span class="field-error" id="coreError" role="alert"></span>
       </div>
     </div>
@@ -115,6 +116,7 @@ ${faviconLink()}
       </div>
       <div class="card-footer">
         <button class="btn btn-primary" id="saveRules" type="button">Save</button>
+        <span class="badge badge-warning" id="rules-dirty" hidden>Unsaved</span>
         <span class="field-error" id="rulesError" role="alert"></span>
       </div>
     </div>
@@ -137,6 +139,7 @@ ${faviconLink()}
       <div class="card-footer">
         <button class="btn btn-primary" id="saveTiers" type="button">Save</button>
         <button class="btn" id="addTier" type="button">Add tier</button>
+        <span class="badge badge-warning" id="tiers-dirty" hidden>Unsaved</span>
         <span class="field-error" id="tiersError" role="alert"></span>
       </div>
     </div>
@@ -163,6 +166,7 @@ ${faviconLink()}
       </div>
       <div class="card-footer">
         <button class="btn btn-primary" id="saveReferral" type="button">Save</button>
+        <span class="badge badge-warning" id="referral-dirty" hidden>Unsaved</span>
         <span class="field-error" id="referralError" role="alert"></span>
       </div>
     </div>
@@ -172,20 +176,21 @@ ${faviconLink()}
   <section id="panel-ledger" role="tabpanel" aria-labelledby="tab-ledger" class="stack" hidden>
     <div class="card">
       <div class="card-header"><div>
-        <h2 class="card-title">Award points</h2>
-        <p class="card-description">Giveaways, contests, or putting things right. Every award lands in the ledger with a full audit trail.</p>
+        <h2 class="card-title">Look up a customer</h2>
+        <p class="card-description">The fastest way to answer “why do I have this many points?” — their balance, tier, and every entry behind it.</p>
       </div></div>
       <div class="card-body stack">
-        <div class="field">
-          <label class="field-label" for="awardList">One customer per line</label>
-          <textarea class="input" id="awardList" placeholder="6123456789,250&#10;6987654321,-100"></textarea>
-          <span class="field-help">Format: <code>customer ID,points</code>. Negative values deduct, and never take a balance below zero.</span>
+        <div class="row">
+          <div class="field">
+            <label class="visually-hidden" for="lookup-id">Customer ID</label>
+            <input class="input input-md" id="lookup-id" type="search" placeholder="Customer ID, e.g. 6123456789"
+                   aria-describedby="lookup-help" />
+          </div>
+          <button class="btn btn-primary" id="lookup-go" type="button">Look up</button>
+          <button class="btn btn-plain" id="lookup-clear" type="button" hidden>Back to all entries</button>
         </div>
-        <div id="awardResult" hidden></div>
-      </div>
-      <div class="card-footer">
-        <button class="btn btn-primary" id="applyAwards" type="button">Apply awards</button>
-        <span class="field-help" id="awardStatus" role="status"></span>
+        <span class="field-help" id="lookup-help">Find the ID in the customer's Shopify admin URL, or click any customer in the ledger below.</span>
+        <div id="lookup-result"></div>
       </div>
     </div>
 
@@ -196,8 +201,6 @@ ${faviconLink()}
       </div><div class="row-end"><button class="btn btn-sm" id="export" type="button">Download CSV</button></div></div>
       <div class="card-body">
         <div class="row">
-          <div class="field"><label class="visually-hidden" for="filter-customer">Search customer</label>
-            <input class="input input-md" id="filter-customer" type="search" placeholder="Search customer ID" /></div>
           <div class="field"><label class="visually-hidden" for="filter-reason">Filter by reason</label>
             <select class="input input-md" id="filter-reason">
               <option value="">All reasons</option>
@@ -228,6 +231,27 @@ ${faviconLink()}
         <div id="entries-empty-body"></div>
       </div>
       <div class="card-footer"><button class="btn" id="loadMore" type="button" hidden>Show more</button><span class="field-help" id="shown-count"></span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div>
+        <h2 class="card-title">Award points</h2>
+        <p class="card-description">Giveaways, contests, or putting things right. Awards are real money to a customer, so check the summary before applying — every one lands in the ledger with a full audit trail.</p>
+      </div></div>
+      <div class="card-body stack">
+        <div class="field">
+          <label class="field-label" for="awardList">One customer per line</label>
+          <textarea class="input" id="awardList" placeholder="6123456789,250&#10;6987654321,-100"
+                    aria-describedby="awardList-help"></textarea>
+          <span class="field-help" id="awardList-help">Format: <code>customer ID,points</code>. Negative values deduct, and never take a balance below zero.</span>
+        </div>
+        <div id="award-preview"></div>
+        <div id="awardResult" hidden></div>
+      </div>
+      <div class="card-footer">
+        <button class="btn btn-primary" id="applyAwards" type="button" disabled>Apply awards</button>
+        <span class="field-help" id="awardStatus" role="status"></span>
+      </div>
     </div>
   </section>
 </div>
@@ -272,7 +296,8 @@ function money(amount, currency) {
   return value.toFixed(2);
 }
 let state = {
-  entries: [], shown: PAGE_SIZE, shopDomain: null, currency: null, settings: null, totalEntries: 0,
+  entries: [], shown: PAGE_SIZE, shopDomain: null, currency: null, settings: null,
+  totalEntries: 0, lookup: null,
 };
 
 /* ---------- plumbing ---------- */
@@ -327,11 +352,25 @@ function showTab(name) {
   for (const t of TABS) {
     const selected = t === name;
     $('tab-' + t).setAttribute('aria-selected', String(selected));
+    $('tab-' + t).tabIndex = selected ? 0 : -1;
     $('panel-' + t).hidden = !selected;
   }
   if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
 }
-for (const t of TABS) $('tab-' + t).onclick = () => showTab(t);
+for (const [i, t] of TABS.entries()) {
+  const tab = $('tab-' + t);
+  tab.onclick = () => showTab(t);
+  // Tabs are one stop in the tab order; arrows move between them (WAI-ARIA).
+  tab.addEventListener('keydown', (e) => {
+    const moves = { ArrowRight: 1, ArrowLeft: -1, Home: -i, End: TABS.length - 1 - i };
+    const delta = moves[e.key];
+    if (delta === undefined) return;
+    e.preventDefault();
+    const next = TABS[(i + delta + TABS.length) % TABS.length];
+    showTab(next);
+    $('tab-' + next).focus();
+  });
+}
 document.querySelectorAll('[data-goto]').forEach((b) => { b.onclick = () => showTab(b.dataset.goto); });
 
 /* ---------- overview ---------- */
@@ -443,7 +482,7 @@ function tierRow(tier) {
   const actions = el('td');
   const remove = el('button', 'btn btn-sm btn-critical', 'Remove');
   remove.type = 'button';
-  remove.onclick = () => { tr.remove(); syncTiersEmpty(); };
+  remove.onclick = () => { tr.remove(); syncTiersEmpty(); markDirty('tiers'); validateTiers(); };
   actions.appendChild(remove);
   tr.appendChild(actions);
   return tr;
@@ -453,23 +492,49 @@ function syncTiersEmpty() {
   $('tiers-empty').hidden = rows > 0;
   document.querySelector('#tiers thead').hidden = rows === 0;
 }
-function renderSettings(s) {
-  state.settings = s;
+/*
+ * Rendered per card, not as one block: saving one card must not overwrite
+ * unsaved edits sitting in another.
+ */
+function renderCore(s) {
   $('earnRate').value = s.earnRate;
   $('redemptionRate').value = s.redemptionRate;
   $('minRedemption').value = s.minRedemption;
   updateExamples();
+  clearDirty('core');
+  validateCore();
+}
+function renderRules(s) {
   const channels = $('channels');
   channels.textContent = '';
   for (const c of CHANNELS) channels.appendChild(channelRow(c, (s.channelRules || {})[c.key]));
   $('excludedSources').value = (s.excludedSources || []).join(', ');
+  clearDirty('rules');
+  validateRules();
+}
+function renderTiers(s) {
   const tbody = document.querySelector('#tiers tbody');
   tbody.textContent = '';
-  for (const t of s.tiers || []) tbody.appendChild(tierRow(t));
+  // Ascending by threshold: the list then reads the way the ladder works.
+  const tiers = (s.tiers || []).slice().sort((a, b) => a.minEarned365 - b.minEarned365);
+  for (const t of tiers) tbody.appendChild(tierRow(t));
   syncTiersEmpty();
+  clearDirty('tiers');
+  validateTiers();
+}
+function renderReferral(s) {
   $('refEnabled').checked = !!(s.referral && s.referral.enabled);
   $('refAdvocate').value = s.referral ? s.referral.advocatePoints : 200;
   $('refFriend').value = s.referral ? s.referral.friendPoints : 100;
+  clearDirty('referral');
+  validateReferral();
+}
+function renderSettings(s) {
+  state.settings = s;
+  renderCore(s);
+  renderRules(s);
+  renderTiers(s);
+  renderReferral(s);
 }
 function updateExamples() {
   const earn = Number($('earnRate').value);
@@ -479,6 +544,121 @@ function updateExamples() {
 }
 $('earnRate').addEventListener('input', updateExamples);
 $('redemptionRate').addEventListener('input', updateExamples);
+
+/* ---------- live validation ----------
+ * Each card checks itself as the merchant types, so a bad value is named
+ * where it was typed instead of after a round trip to the server.
+ */
+const positiveDecimal = (v) => /^\\d+(\\.\\d+)?$/.test(String(v).trim()) && Number(v) > 0;
+const positiveInt = (v) => /^\\d+$/.test(String(v).trim()) && Number(v) > 0;
+const nonNegativeInt = (v) => /^\\d+$/.test(String(v).trim());
+function mark(id, ok) { $(id).setAttribute('aria-invalid', String(!ok)); return ok; }
+
+function validateCore() {
+  const problems = [];
+  if (!mark('earnRate', positiveDecimal($('earnRate').value))) problems.push('Points earned per 1.00 must be a positive number.');
+  if (!mark('redemptionRate', positiveDecimal($('redemptionRate').value))) problems.push('Points per 1.00 of discount must be a positive number.');
+  if (!mark('minRedemption', positiveInt($('minRedemption').value))) problems.push('Minimum redemption must be a whole number above zero.');
+  $('coreError').textContent = problems[0] || '';
+  $('saveCore').disabled = problems.length > 0;
+  return problems.length === 0;
+}
+function validateRules() {
+  const problems = [];
+  for (const c of CHANNELS) {
+    const field = $('chrate_' + c.key);
+    if (!field) continue;
+    const value = field.value.trim();
+    const ok = value === '' || positiveDecimal(value);
+    field.setAttribute('aria-invalid', String(!ok));
+    if (!ok) problems.push(c.label + ' rate must be a positive number, or blank to use the base rate.');
+  }
+  $('rulesError').textContent = problems[0] || '';
+  $('saveRules').disabled = problems.length > 0;
+  return problems.length === 0;
+}
+function readTierRows() {
+  return [...document.querySelectorAll('#tiers tbody tr')].map((tr) => ({
+    tr,
+    name: tr.querySelector('.tier-name').value.trim(),
+    min: tr.querySelector('.tier-min').value.trim(),
+    multiplier: tr.querySelector('.tier-mult').value.trim(),
+  }));
+}
+function validateTiers() {
+  const rows = readTierRows();
+  const problems = [];
+  const seen = new Map();
+  for (const row of rows) {
+    // Number('') is 0 — a blank minimum would silently grant the tier to the
+    // whole shop, so every field has to be filled in explicitly.
+    const nameOk = row.name !== '';
+    const minOk = nonNegativeInt(row.min);
+    const multOk = positiveDecimal(row.multiplier);
+    row.tr.querySelector('.tier-name').setAttribute('aria-invalid', String(!nameOk));
+    row.tr.querySelector('.tier-min').setAttribute('aria-invalid', String(!minOk));
+    row.tr.querySelector('.tier-mult').setAttribute('aria-invalid', String(!multOk));
+    if (!nameOk || !minOk || !multOk) {
+      problems.push('Every tier needs a name, a whole-number minimum, and a multiplier above zero.');
+      continue;
+    }
+    // Two tiers at the same threshold: one of them can never be reached.
+    if (seen.has(row.min)) {
+      problems.push('Two tiers both start at ' + nf.format(Number(row.min)) + ' points — only the first would ever apply.');
+      row.tr.querySelector('.tier-min').setAttribute('aria-invalid', 'true');
+    }
+    seen.set(row.min, row.name);
+  }
+  $('tiersError').textContent = problems[0] || '';
+  $('saveTiers').disabled = problems.length > 0;
+  return problems.length === 0;
+}
+function validateReferral() {
+  const problems = [];
+  if (!mark('refAdvocate', nonNegativeInt($('refAdvocate').value))) problems.push('Referrer reward must be a whole number of points (0 or more).');
+  if (!mark('refFriend', nonNegativeInt($('refFriend').value))) problems.push('Welcome bonus must be a whole number of points (0 or more).');
+  $('referralError').textContent = problems[0] || '';
+  $('saveReferral').disabled = problems.length > 0;
+  return problems.length === 0;
+}
+function validateAll() { validateCore(); validateRules(); validateTiers(); validateReferral(); }
+
+/* ---------- unsaved work ----------
+ * Edits survive switching tabs (panels are only hidden), but a refresh or a
+ * closed tab would lose them silently — so say so, and ask first.
+ */
+const dirty = new Set();
+function markDirty(key) {
+  if (dirty.has(key)) return;
+  dirty.add(key);
+  $(key + '-dirty').hidden = false;
+}
+function clearDirty(key) {
+  dirty.delete(key);
+  $(key + '-dirty').hidden = true;
+}
+function clearAllDirty() { for (const k of ['core', 'rules', 'tiers', 'referral']) clearDirty(k); }
+function watchCard(key, ids, validate) {
+  for (const id of ids) {
+    const node = $(id);
+    if (!node) continue;
+    for (const evt of ['input', 'change']) {
+      node.addEventListener(evt, () => { markDirty(key); validate(); });
+    }
+  }
+}
+watchCard('core', ['earnRate', 'redemptionRate', 'minRedemption'], validateCore);
+watchCard('rules', ['excludedSources'], validateRules);
+watchCard('referral', ['refEnabled', 'refAdvocate', 'refFriend'], validateReferral);
+for (const evt of ['input', 'change']) {
+  $('channels').addEventListener(evt, () => { markDirty('rules'); validateRules(); });
+  $('tiers').addEventListener(evt, () => { markDirty('tiers'); validateTiers(); });
+}
+window.addEventListener('beforeunload', (e) => {
+  if (dirty.size === 0) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 $('saveCore').onclick = async () => {
   $('coreError').textContent = '';
@@ -490,7 +670,7 @@ $('saveCore').onclick = async () => {
   });
   busy($('saveCore'), false, 'Save');
   if (!ok) { $('coreError').textContent = body.error || 'Could not save.'; return; }
-  renderSettings(body); toast('Earning and redemption saved'); refreshOverview();
+  renderCore(body); toast('Earning and redemption saved'); refreshOverview();
 };
 
 $('saveRules').onclick = async () => {
@@ -507,33 +687,26 @@ $('saveRules').onclick = async () => {
   const { ok, body } = await putSettings({ channelRules, excludedSources });
   busy($('saveRules'), false, 'Save');
   if (!ok) { $('rulesError').textContent = body.error || 'Could not save.'; return; }
-  renderSettings(body); toast('Earning rules saved'); refreshOverview();
+  renderRules(body); toast('Earning rules saved'); refreshOverview();
 };
 
 $('saveTiers').onclick = async () => {
-  $('tiersError').textContent = '';
-  const tiers = [];
-  for (const tr of document.querySelectorAll('#tiers tbody tr')) {
-    const name = tr.querySelector('.tier-name').value.trim();
-    const min = tr.querySelector('.tier-min').value.trim();
-    const multiplier = tr.querySelector('.tier-mult').value.trim();
-    // Number('') is 0 — a blank minimum would silently grant the tier to
-    // every customer in the shop, so each field has to be explicit.
-    if (name === '' || min === '' || !/^\\d+$/.test(min) || multiplier === '') {
-      $('tiersError').textContent = 'Every tier needs a name, a whole-number minimum, and a multiplier.';
-      return;
-    }
-    tiers.push({ name, minEarned365: Number(min), multiplier });
-  }
+  if (!validateTiers()) return;
+  const tiers = readTierRows()
+    .map((row) => ({ name: row.name, minEarned365: Number(row.min), multiplier: row.multiplier }))
+    .sort((a, b) => a.minEarned365 - b.minEarned365);
   busy($('saveTiers'), true);
   const { ok, body } = await putSettings({ tiers });
   busy($('saveTiers'), false, 'Save');
   if (!ok) { $('tiersError').textContent = body.error || 'Could not save.'; return; }
-  renderSettings(body); toast(tiers.length ? 'VIP tiers saved' : 'VIP tiers removed'); refreshOverview();
+  renderTiers(body); toast(tiers.length ? 'VIP tiers saved' : 'VIP tiers removed'); refreshOverview();
 };
 $('addTier').onclick = () => {
   document.querySelector('#tiers tbody').appendChild(tierRow(null));
   syncTiersEmpty();
+  markDirty('tiers');
+  validateTiers();
+  document.querySelector('#tiers tbody tr:last-child .tier-name').focus();
 };
 
 $('saveReferral').onclick = async () => {
@@ -548,21 +721,95 @@ $('saveReferral').onclick = async () => {
   });
   busy($('saveReferral'), false, 'Save');
   if (!ok) { $('referralError').textContent = body.error || 'Could not save.'; return; }
-  renderSettings(body); toast('Referral settings saved'); refreshOverview();
+  renderReferral(body); toast('Referral settings saved'); refreshOverview();
 };
 
 /* ---------- awards ---------- */
+/**
+ * Awards move money, so nothing is sent until the merchant can see exactly
+ * who gets what. Every line is parsed as it is typed and shown back; a single
+ * malformed line blocks the whole batch rather than silently skipping.
+ */
+function parseAwards(text) {
+  const rows = [];
+  for (const [i, raw] of text.split('\\n').entries()) {
+    const line = raw.trim();
+    if (line === '') continue;
+    const parts = line.split(',');
+    const id = (parts[0] || '').trim().replace('gid://shopify/Customer/', '');
+    const pointsText = (parts[1] || '').trim();
+    const points = Number(pointsText);
+    let error;
+    if (parts.length !== 2) error = 'Needs exactly one comma: customer ID,points';
+    else if (!/^\\d+$/.test(id)) error = 'Customer ID must be digits';
+    else if (!/^-?\\d+$/.test(pointsText) || points === 0) error = 'Points must be a whole number, not zero';
+    rows.push({ lineNumber: i + 1, id, points, error });
+  }
+  return rows;
+}
+function renderAwardPreview() {
+  const rows = parseAwards($('awardList').value);
+  const panel = $('award-preview');
+  panel.textContent = '';
+  const invalid = rows.filter((r) => r.error);
+  $('applyAwards').disabled = rows.length === 0 || invalid.length > 0;
+  if (rows.length === 0) return;
+
+  const table = el('table', 'data');
+  const thead = el('thead');
+  const hrow = el('tr');
+  for (const h of ['Customer', 'Change', 'Status']) hrow.appendChild(el('th', null, h));
+  thead.appendChild(hrow);
+  table.appendChild(thead);
+  const tbody = el('tbody');
+  for (const r of rows) {
+    const tr = el('tr');
+    const cust = el('td');
+    cust.appendChild(el('span', 'mono', r.id || '—'));
+    tr.appendChild(cust);
+    tr.appendChild(el('td', 'num ' + (r.error ? '' : r.points > 0 ? 'delta-pos' : ''), r.error ? '—' : (r.points > 0 ? '+' : '') + nf.format(r.points)));
+    const status = el('td');
+    status.appendChild(r.error ? badge(r.error, 'badge-critical') : badge('Ready', 'badge-success'));
+    tr.appendChild(status);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  const wrap = el('div', 'table-wrap');
+  wrap.appendChild(table);
+  panel.appendChild(wrap);
+
+  const credited = rows.filter((r) => !r.error && r.points > 0).reduce((s, r) => s + r.points, 0);
+  const deducted = rows.filter((r) => !r.error && r.points < 0).reduce((s, r) => s + r.points, 0);
+  const summary = el('div', invalid.length ? 'banner banner-critical' : 'banner');
+  const inner = el('div');
+  inner.appendChild(el('div', 'banner-title', invalid.length
+    ? invalid.length + (invalid.length === 1 ? ' line needs fixing' : ' lines need fixing')
+    : 'About to award ' + rows.length + (rows.length === 1 ? ' customer' : ' customers')));
+  if (!invalid.length) {
+    const parts = [];
+    if (credited) parts.push(nf.format(credited) + ' points credited');
+    if (deducted) parts.push(nf.format(-deducted) + ' points deducted');
+    inner.appendChild(el('p', null, parts.join(' · ') + '. This cannot be undone automatically — a mistake has to be corrected with another award.'));
+  }
+  summary.appendChild(inner);
+  panel.appendChild(summary);
+}
+
 // The batch id is minted once per list and reused on retries, so a request
 // that times out client-side cannot double-award when clicked again.
 let awardBatchId = null;
-$('awardList').addEventListener('input', () => { awardBatchId = null; });
+$('awardList').addEventListener('input', () => { awardBatchId = null; renderAwardPreview(); });
 $('applyAwards').onclick = async () => {
-  const awards = $('awardList').value.split('\\n').map((l) => l.trim()).filter(Boolean).map((line) => {
-    const [customer, points] = line.split(',');
-    return { customerId: 'gid://shopify/Customer/' + (customer || '').trim(), points: Number(points) };
-  });
+  const rows = parseAwards($('awardList').value);
   const status = $('awardStatus');
-  if (awards.length === 0) { status.textContent = 'Add at least one line first.'; return; }
+  if (rows.length === 0 || rows.some((r) => r.error)) {
+    status.textContent = 'Fix the lines above first.';
+    return;
+  }
+  const awards = rows.map((r) => ({
+    customerId: 'gid://shopify/Customer/' + r.id,
+    points: r.points,
+  }));
   awardBatchId = awardBatchId || crypto.randomUUID();
   busy($('applyAwards'), true, 'Applying…');
   const res = await authed('/api/awards', {
@@ -591,28 +838,36 @@ $('applyAwards').onclick = async () => {
   inner.appendChild(list);
   b.appendChild(inner);
   panel.appendChild(b);
-  if (!body.replayed) toast('Awards applied');
+  if (!body.replayed) {
+    toast('Awards applied');
+    // Clear the list so the applied batch can't be re-read as pending work.
+    $('awardList').value = '';
+    awardBatchId = null;
+    renderAwardPreview();
+  }
   loadEntries(); refreshOverview();
 };
 
 /* ---------- ledger ---------- */
+// Drilling into a customer is the common follow-up from a ledger row, so the
+// id is an in-app action; the external Shopify link lives on the detail card.
 function customerCell(customerId) {
   const num = customerId.replace('gid://shopify/Customer/', '');
-  if (!state.shopDomain || !/^\\d+$/.test(num)) return el('span', 'mono', num);
-  const a = el('a', 'mono', num);
-  a.href = 'https://' + state.shopDomain + '/admin/customers/' + num;
-  a.target = '_blank';
-  a.rel = 'noopener';
-  return a;
+  if (!/^\\d+$/.test(num)) return el('span', 'mono', num);
+  const button = el('button', 'btn btn-plain btn-sm mono', num);
+  button.type = 'button';
+  button.setAttribute('aria-label', 'Look up customer ' + num);
+  button.onclick = () => {
+    $('lookup-id').value = num;
+    lookupCustomer();
+  };
+  return button;
 }
 function filtered() {
-  const q = $('filter-customer').value.trim();
   const reason = $('filter-reason').value;
   const channel = $('filter-channel').value;
   return state.entries.filter((e) =>
-    (!q || e.customerId.includes(q)) &&
-    (!reason || e.reason === reason) &&
-    (!channel || e.sourceName === channel)
+    (!reason || e.reason === reason) && (!channel || e.sourceName === channel)
   );
 }
 function entryRow(e) {
@@ -645,30 +900,132 @@ function renderEntries() {
   for (const e of rows.slice(0, state.shown)) tbody.appendChild(entryRow(e));
   $('entries-empty').hidden = rows.length > 0;
   // A shop with no entries at all is a new install, not a failed search.
-  const fresh = state.entries.length === 0;
+  const fresh = state.entries.length === 0 && !state.lookup;
   $('entries-empty-title').textContent = fresh ? 'No points activity yet' : 'Nothing matches';
   $('entries-empty-body').textContent = fresh
     ? 'Every earn, redemption, and refund reversal will be listed here as it happens.'
-    : 'Try a different customer, reason, or channel.';
+    : 'Try a different reason or channel.';
   $('loadMore').hidden = rows.length <= state.shown;
   $('shown-count').textContent = rows.length
     ? 'Showing ' + Math.min(state.shown, rows.length) + ' of ' + nf.format(rows.length)
     : '';
   const total = Math.max(state.totalEntries, state.entries.length);
-  $('ledger-count').textContent = fresh
-    ? 'Nothing recorded yet.'
-    : total > state.entries.length
-      ? nf.format(total) + ' entries. Showing the most recent ' + nf.format(state.entries.length) + ', newest first.'
-      : nf.format(total) + ' entries, newest first.';
+  $('ledger-count').textContent = state.lookup
+    ? 'Every entry for customer ' + state.lookup.raw + ', newest first.'
+    : fresh
+      ? 'Nothing recorded yet.'
+      : total > state.entries.length
+        ? nf.format(total) + ' entries. Showing the most recent ' + nf.format(state.entries.length) + ', newest first.'
+        : nf.format(total) + ' entries, newest first.';
 
   const recent = document.querySelector('#recent tbody');
   recent.textContent = '';
   for (const e of state.entries.slice(0, 6)) recent.appendChild(entryRow(e));
   $('recent-empty').hidden = state.entries.length > 0;
 }
-for (const id of ['filter-customer', 'filter-reason', 'filter-channel']) {
+for (const id of ['filter-reason', 'filter-channel']) {
   $(id).addEventListener('input', () => { state.shown = PAGE_SIZE; renderEntries(); });
 }
+
+/* ---------- customer lookup ---------- */
+async function lookupCustomer() {
+  const raw = $('lookup-id').value.trim().replace('gid://shopify/Customer/', '');
+  const panel = $('lookup-result');
+  panel.textContent = '';
+  if (!/^\\d+$/.test(raw)) {
+    const b = el('div', 'banner banner-warning');
+    b.appendChild(el('div', 'banner-title', 'Enter a numeric customer ID, like 6123456789.'));
+    panel.appendChild(b);
+    return;
+  }
+  const customerId = 'gid://shopify/Customer/' + raw;
+  const q = encodeURIComponent(customerId);
+  busy($('lookup-go'), true, 'Looking up…');
+  try {
+    const [balance, entries] = await Promise.all([
+      (await authed('/api/balance?customerId=' + q)).json(),
+      (await authed('/api/entries?customerId=' + q)).json(),
+    ]);
+    // Authoritative for this customer: their whole history, not the recent window.
+    state.entries = entries.entries.slice().reverse();
+    state.lookup = { customerId, raw };
+    state.shown = PAGE_SIZE;
+    renderLookup(balance, entries.entries.length);
+    renderEntries();
+    $('lookup-clear').hidden = false;
+  } catch (err) {
+    const b = el('div', 'banner banner-critical');
+    b.appendChild(el('div', 'banner-title', 'Could not load that customer: ' + err));
+    panel.appendChild(b);
+  } finally {
+    busy($('lookup-go'), false, 'Look up');
+  }
+}
+function renderLookup(balance, entryCount) {
+  const panel = $('lookup-result');
+  panel.textContent = '';
+  if (entryCount === 0) {
+    const b = el('div', 'banner');
+    const inner = el('div');
+    inner.append(
+      el('div', 'banner-title', 'No points activity for this customer'),
+      el('p', null, 'Either they have never bought anything, or this ID belongs to a different store.'),
+    );
+    b.appendChild(inner);
+    panel.appendChild(b);
+    return;
+  }
+  const grid = el('div', 'grid grid-stats');
+  const tile = (label, value, caption) => {
+    const card = el('div', 'card');
+    const body = el('div', 'stat');
+    body.append(el('div', 'stat-label', label), el('div', 'stat-value', value));
+    if (caption) body.appendChild(el('div', 'stat-caption', caption));
+    card.appendChild(body);
+    return card;
+  };
+  grid.append(
+    tile('Points balance', nf.format(balance.balance), 'Worth ' + money(balance.maxDiscountAmount, state.currency)),
+    tile(
+      balance.tier && balance.tier.name ? 'Tier' : 'Points earned (365 days)',
+      balance.tier && balance.tier.name ? balance.tier.name : nf.format(balance.tier ? balance.tier.earned365 : 0),
+      balance.tier && balance.tier.name ? nf.format(balance.tier.earned365) + ' earned in 365 days' : 'No tier reached',
+    ),
+    tile('Ledger entries', nf.format(entryCount), 'All time'),
+  );
+  panel.appendChild(grid);
+
+  const actions = el('div', 'row');
+  if (state.shopDomain) {
+    const link = el('a', 'btn btn-sm', 'Open in Shopify');
+    link.href = 'https://' + state.shopDomain + '/admin/customers/' + state.lookup.raw;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    actions.appendChild(link);
+  }
+  const award = el('button', 'btn btn-sm', 'Award points to this customer');
+  award.type = 'button';
+  award.onclick = () => {
+    const box = $('awardList');
+    const line = state.lookup.raw + ',';
+    box.value = box.value.trim() ? box.value.trim() + '\\n' + line : line;
+    box.dispatchEvent(new Event('input'));
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  };
+  actions.appendChild(award);
+  panel.appendChild(actions);
+}
+$('lookup-go').onclick = lookupCustomer;
+$('lookup-id').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookupCustomer(); });
+$('lookup-clear').onclick = async () => {
+  state.lookup = null;
+  $('lookup-id').value = '';
+  $('lookup-result').textContent = '';
+  $('lookup-clear').hidden = true;
+  state.shown = PAGE_SIZE;
+  await loadEntries();
+};
 $('loadMore').onclick = () => { state.shown += PAGE_SIZE; renderEntries(); };
 
 $('export').onclick = async () => {
@@ -686,6 +1043,8 @@ $('export').onclick = async () => {
 async function loadEntries() {
   const { entries } = await (await authed('/api/entries?limit=' + LEDGER_WINDOW)).json();
   state.entries = entries.slice().reverse();
+  state.lookup = null;
+  $('lookup-clear').hidden = true;
   renderEntries();
 }
 async function refreshOverview() {
@@ -714,10 +1073,41 @@ async function load() {
     panel.appendChild(b);
   }
 }
-$('refresh').onclick = async () => {
+async function doRefresh() {
   busy($('refresh'), true, 'Refreshing…');
   await load();
   busy($('refresh'), false, 'Refresh');
+}
+$('refresh').onclick = () => {
+  // Reloading replaces every field from the server, so ask before throwing
+  // away edits the merchant has not saved. Inline, not a browser dialog.
+  if (dirty.size === 0) return doRefresh();
+  const panel = $('load-error');
+  panel.hidden = false;
+  panel.textContent = '';
+  const b = el('div', 'banner banner-warning');
+  const inner = el('div');
+  inner.append(
+    el('div', 'banner-title', 'You have unsaved changes'),
+    el('p', null, 'Refreshing reloads everything from Shopify and discards them.'),
+  );
+  const actions = el('div', 'row');
+  const discard = el('button', 'btn btn-sm', 'Discard and refresh');
+  discard.type = 'button';
+  discard.onclick = async () => {
+    clearAllDirty();
+    panel.hidden = true;
+    panel.textContent = '';
+    await doRefresh();
+  };
+  const keep = el('button', 'btn btn-sm btn-plain', 'Keep editing');
+  keep.type = 'button';
+  keep.onclick = () => { panel.hidden = true; panel.textContent = ''; };
+  actions.append(discard, keep);
+  inner.appendChild(actions);
+  b.appendChild(inner);
+  panel.appendChild(b);
+  return undefined;
 };
 
 showTab(TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview');

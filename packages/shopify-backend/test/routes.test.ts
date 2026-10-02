@@ -38,6 +38,11 @@ describe('GET /admin', () => {
       expect(html).toContain(panel);
     }
     expect(html).toContain('role="tablist"');
+    // The merchant's commonest support task has a first-class entry point,
+    // and awards are previewed before they move anyone's points.
+    expect(html).toContain('Look up a customer');
+    expect(html).toContain('id="award-preview"');
+    expect(html).toContain('id="applyAwards" type="button" disabled');
     // Layout classes carry display:flex, which beats the UA's [hidden] rule —
     // without this, every tab panel renders at once.
     expect(html).toContain('[hidden] { display: none !important; }');

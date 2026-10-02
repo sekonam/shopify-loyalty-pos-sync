@@ -221,7 +221,7 @@ describe('refunds/create', () => {
     const deps = makeDeps();
     const outcome = await deliver(deps, 'refunds/create', refundPayload());
     expect(outcome).toMatchObject({
-      action: 'no earn entry for refunded order yet (reconciliation will catch up)',
+      action: 'no earn entry for refunded order (nothing to reverse)',
     });
   });
 

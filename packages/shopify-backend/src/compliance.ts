@@ -25,6 +25,20 @@ export class PgComplianceStore implements ComplianceStore {
       'update redemption_attempt set customer_id = $3 where shop_domain = $1 and customer_id = $2',
       [shopDomain, customerId, pseudonym],
     );
+    // Referral tables hold the raw id in three columns; the aggregate rows
+    // stay (one-reward-per-friend must survive redaction) but identity goes.
+    await this.db.query(
+      'update referral_code set customer_id = $3 where shop_domain = $1 and customer_id = $2',
+      [shopDomain, customerId, pseudonym],
+    );
+    await this.db.query(
+      'update referral set friend_customer_id = $3 where shop_domain = $1 and friend_customer_id = $2',
+      [shopDomain, customerId, pseudonym],
+    );
+    await this.db.query(
+      'update referral set advocate_customer_id = $3 where shop_domain = $1 and advocate_customer_id = $2',
+      [shopDomain, customerId, pseudonym],
+    );
   }
 }
 

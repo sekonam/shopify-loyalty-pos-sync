@@ -106,29 +106,56 @@ const putJson = (path, body) => authed(path, {
   body: JSON.stringify(body),
 });
 
+// All dynamic values are assigned via DOM properties, NEVER interpolated
+// into HTML — stored config (e.g. a tier name) must not be able to inject
+// markup into a page that holds a live admin session.
 function channelRow(channel, rule) {
-  const enabled = !rule || rule.enabled !== false;
-  return '<label class="inline"><input type="checkbox" id="ch_' + channel + '" ' +
-    (enabled ? 'checked' : '') + ' /> ' + channel + '</label>' +
-    '<input class="narrow" id="chrate_' + channel + '" placeholder="rate" value="' +
-    ((rule && rule.earnRate) || '') + '" /> ';
+  const frag = document.createDocumentFragment();
+  const label = document.createElement('label');
+  label.className = 'inline';
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.id = 'ch_' + channel;
+  box.checked = !rule || rule.enabled !== false;
+  label.append(box, ' ' + channel);
+  const rate = document.createElement('input');
+  rate.className = 'narrow';
+  rate.id = 'chrate_' + channel;
+  rate.placeholder = 'rate';
+  rate.value = (rule && rule.earnRate) || '';
+  frag.append(label, rate, ' ');
+  return frag;
 }
 
 function tierRow(tier) {
   const tr = document.createElement('tr');
-  tr.innerHTML =
-    '<td><input class="tier-name" value="' + (tier ? tier.name : '') + '" /></td>' +
-    '<td><input class="tier-min narrow" inputmode="numeric" value="' + (tier ? tier.minEarned365 : '') + '" /></td>' +
-    '<td><input class="tier-mult narrow" inputmode="decimal" value="' + (tier ? tier.multiplier : '') + '" /></td>' +
-    '<td><button type="button" class="tier-remove">Remove</button></td>';
-  tr.querySelector('.tier-remove').onclick = () => tr.remove();
+  const mk = (cls, extra, value) => {
+    const td = document.createElement('td');
+    const input = document.createElement('input');
+    input.className = cls;
+    Object.assign(input, extra);
+    input.value = value;
+    td.appendChild(input);
+    tr.appendChild(td);
+  };
+  mk('tier-name', {}, tier ? tier.name : '');
+  mk('tier-min narrow', { inputMode: 'numeric' }, tier ? String(tier.minEarned365) : '');
+  mk('tier-mult narrow', { inputMode: 'decimal' }, tier ? tier.multiplier : '');
+  const td = document.createElement('td');
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.textContent = 'Remove';
+  remove.onclick = () => tr.remove();
+  td.appendChild(remove);
+  tr.appendChild(td);
   return tr;
 }
 
 async function load() {
   const s = await (await authed('/api/settings')).json();
   for (const k of ['earnRate', 'redemptionRate', 'minRedemption']) $(k).value = s[k];
-  $('channels').innerHTML = CHANNELS.map((c) => channelRow(c, (s.channelRules || {})[c])).join('');
+  $('channels').textContent = '';
+  for (const c of CHANNELS) $('channels').appendChild(channelRow(c, (s.channelRules || {})[c]));
   $('excludedSources').value = (s.excludedSources || []).join(', ');
   const tbody = $('tiers');
   tbody.innerHTML = '';
@@ -179,11 +206,20 @@ $('saveRules').onclick = async () => {
     if (rate !== '') rule.earnRate = rate;
     channelRules[c] = rule;
   }
-  const tiers = [...document.querySelectorAll('#tiers tr')].map((tr) => ({
-    name: tr.querySelector('.tier-name').value.trim(),
-    minEarned365: Number(tr.querySelector('.tier-min').value),
-    multiplier: tr.querySelector('.tier-mult').value.trim(),
-  }));
+  const tiers = [];
+  for (const tr of document.querySelectorAll('#tiers tr')) {
+    const name = tr.querySelector('.tier-name').value.trim();
+    const minRaw = tr.querySelector('.tier-min').value.trim();
+    const multiplier = tr.querySelector('.tier-mult').value.trim();
+    // Number('') is 0 — a blank minimum would silently grant the tier to
+    // the whole shop, so every field must be explicit.
+    if (name === '' || minRaw === '' || !/^\\d+$/.test(minRaw) || multiplier === '') {
+      $('rulesStatus').textContent =
+        'Not saved: every tier needs a name, a whole-number minimum, and a multiplier.';
+      return;
+    }
+    tiers.push({ name, minEarned365: Number(minRaw), multiplier });
+  }
   const excludedSources = $('excludedSources').value.split(',').map((s) => s.trim()).filter(Boolean);
   const res = await putJson('/api/settings', {
     channelRules,
@@ -200,6 +236,13 @@ $('saveRules').onclick = async () => {
 
 $('addTier').onclick = () => $('tiers').appendChild(tierRow(null));
 
+// The batch id is minted once per textarea content and reused on retries, so
+// a timed-out request clicked again cannot double-award (the server replays
+// the stored result for a known batch id). Editing the list starts a new batch.
+let awardBatchId = null;
+$('awardList').addEventListener('input', () => {
+  awardBatchId = null;
+});
 $('applyAwards').onclick = async () => {
   const awards = $('awardList').value.split('\\n').map((line) => line.trim()).filter(Boolean)
     .map((line) => {
@@ -213,13 +256,18 @@ $('applyAwards').onclick = async () => {
     $('awardStatus').textContent = 'Nothing to apply.';
     return;
   }
+  awardBatchId = awardBatchId || crypto.randomUUID();
   const res = await authed('/api/awards', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ batchId: crypto.randomUUID(), awards }),
+    body: JSON.stringify({ batchId: awardBatchId, awards }),
   });
   const body = await res.json();
-  $('awardStatus').textContent = res.ok ? 'Applied.' : 'Failed.';
+  $('awardStatus').textContent = res.ok
+    ? body.replayed
+      ? 'Already applied (replay).'
+      : 'Applied.'
+    : 'Failed.';
   $('awardResult').hidden = false;
   $('awardResult').textContent = JSON.stringify(body, null, 2);
   if (res.ok) loadEntries();

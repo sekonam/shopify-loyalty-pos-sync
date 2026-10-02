@@ -1,18 +1,13 @@
 import {
-  earnEntryFromOrder,
-  effectiveEarnRate,
   floorProduct,
-  refundReversalEntry,
   sumAmounts,
   type LedgerStore,
-  type PointsLedgerEntry,
   type ShopSettings,
 } from '@loyalty/ledger';
+import { computeOrderEarn, reverseOrderRefund } from './earn-policy.js';
 import { hashPayload, type ReceiptStore } from './receipts.js';
 import type { ReferralStore } from './referrals.js';
 import type { SettingsStore } from './settings.js';
-
-export const TIER_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
 
 export interface ComplianceStore {
   /** customers/redact: strip the customer's identity, keep aggregate ledger rows valid. */
@@ -153,38 +148,20 @@ async function handleOrdersPaid(
 
   const oid = order.admin_graphql_api_id ?? orderGid(order.id);
 
-  // Referral eligibility is judged BEFORE this order's earn lands: the
-  // reward fires only on the friend's first earning order.
-  const isFirstEarn =
-    (await deps.ledger.earnedSince(shopDomain, customerId, new Date(0))) === 0;
-
-  // v1.x/v2 earn policy: excluded source → channel rule → tier multiplier.
-  const earned365 = await deps.ledger.earnedSince(
+  const { policy, draft } = await computeOrderEarn({
+    ledger: deps.ledger,
+    settings,
     shopDomain,
     customerId,
-    new Date(Date.now() - TIER_WINDOW_MS),
-  );
-  const policy = effectiveEarnRate({
-    baseEarnRate: settings.earnRate,
+    orderId: oid,
     orderSourceName: order.source_name,
-    channelRules: settings.channelRules,
-    excludedSources: settings.excludedSources,
-    tiers: settings.tiers,
-    earned365,
+    totalPrice: order.total_price,
   });
 
   let earnAction: string;
   if (policy.kind === 'skip') {
     earnAction = `no earn: ${policy.why}`;
   } else {
-    const draft = earnEntryFromOrder({
-      shopDomain,
-      customerId,
-      orderId: oid,
-      orderSourceName: order.source_name,
-      totalPrice: order.total_price,
-      earnRate: policy.rate,
-    });
     earnAction = draft
       ? (await deps.ledger.append(draft)).inserted
         ? `earned ${draft.delta}${policy.tier ? ` (${policy.tier.name})` : ''}`
@@ -192,16 +169,12 @@ async function handleOrdersPaid(
       : 'order earned zero points';
   }
 
-  const referralAction = await processReferral(
-    shopDomain,
-    oid,
-    customerId,
-    isFirstEarn,
-    order,
-    settings,
-    deps,
-  );
-  if (referralAction) earnAction = `${earnAction}; ${referralAction}`;
+  // Referrals only for orders that actually earn — an excluded source or
+  // disabled channel must not pay rewards (nor consume the friend's one slot).
+  if (policy.kind === 'earn') {
+    const referralAction = await processReferral(shopDomain, oid, customerId, order, settings, deps);
+    if (referralAction) earnAction = `${earnAction}; ${referralAction}`;
+  }
 
   // After the earn, so the clawback has the order's own points to claw from.
   const clawback = await enforceLoyaltyAttempt(
@@ -228,7 +201,6 @@ async function processReferral(
   shopDomain: string,
   orderId: string,
   customerId: string,
-  isFirstEarn: boolean,
   order: OrdersPaidPayload,
   settings: ShopSettings,
   deps: WebhookDeps,
@@ -240,7 +212,12 @@ async function processReferral(
   if (!code) return undefined;
   const log = deps.log ?? (() => undefined);
   if (!referral?.enabled) return 'referral code ignored (program disabled)';
-  if (!isFirstEarn) return 'referral code ignored (not first order)';
+  // First-order test that survives redelivery: earns from THIS order don't
+  // disqualify (the earn append above may already have landed on a previous,
+  // partially-failed delivery of this same webhook).
+  if (await deps.ledger.hasEarnFromOtherOrder(shopDomain, customerId, orderId)) {
+    return 'referral code ignored (not first order)';
+  }
   const advocate = await deps.referrals.advocateFor(shopDomain, code);
   if (!advocate) {
     log('unknown referral code', { shopDomain, orderId, code });
@@ -250,37 +227,45 @@ async function processReferral(
     log('self-referral ignored', { shopDomain, orderId });
     return 'self-referral ignored';
   }
-  const recorded = await deps.referrals.recordIfFirst(shopDomain, {
+  const { created, record } = await deps.referrals.recordOrGet(shopDomain, {
     advocateCustomerId: advocate,
     friendCustomerId: customerId,
     code,
     orderId,
+    advocatePoints: referral.advocatePoints,
+    friendPoints: referral.friendPoints,
   });
-  if (!recorded) return 'referral already rewarded for this customer';
+  // A standing record for a DIFFERENT order means the one-reward-per-friend
+  // slot is spent. The same order means this is a redelivery whose reward
+  // appends may not have completed — fall through and (re)append them; the
+  // per-order idempotency keys make that safe.
+  if (!created && record.orderId !== orderId) {
+    return 'referral already rewarded for this customer';
+  }
   const parts: string[] = [];
-  if (referral.advocatePoints > 0) {
+  if (record.advocatePoints > 0) {
     await deps.ledger.append({
       shopDomain,
-      customerId: advocate,
+      customerId: record.advocateCustomerId,
       orderId,
       sourceName: 'system',
-      delta: referral.advocatePoints,
+      delta: record.advocatePoints,
       reason: 'referral_reward',
       idempotencyKey: `referral_advocate:${orderId}`,
     });
-    parts.push(`advocate +${referral.advocatePoints}`);
+    parts.push(`advocate +${record.advocatePoints}`);
   }
-  if (referral.friendPoints > 0) {
+  if (record.friendPoints > 0) {
     await deps.ledger.append({
       shopDomain,
       customerId,
       orderId,
       sourceName: 'system',
-      delta: referral.friendPoints,
+      delta: record.friendPoints,
       reason: 'referral_reward',
       idempotencyKey: `referral_friend:${orderId}`,
     });
-    parts.push(`friend +${referral.friendPoints}`);
+    parts.push(`friend +${record.friendPoints}`);
   }
   return `referral rewarded (${parts.join(', ')})`;
 }
@@ -367,52 +352,23 @@ async function handleRefundsCreate(
   }
   // Actual money returned = successful refund transactions. A restock-only
   // exchange moves no money and reverses no points (we earn on the paid total,
-  // so the reversal mirrors the money, not the merchandise).
+  // so the reversal mirrors the money, not the merchandise). The shared
+  // reversal in earn-policy enforces the invariants: order-capped, priced at
+  // the rate the order ACTUALLY earned at, referral clawback on full unwind.
   const refundedAmount = sumAmounts(
     (refund.transactions ?? [])
       .filter((t) => t.kind === 'refund' && t.status === 'success' && typeof t.amount === 'string')
       .map((t) => t.amount as string),
   );
-  if (!(Number(refundedAmount) > 0)) {
-    return { handled: true, action: 'no refunded amount, nothing to reverse' };
-  }
-
-  // The refund payload carries no customer and no source_name for the order:
-  // both come from the order's own earn entry in the ledger. No earn entry =>
-  // nothing to reverse yet; the reconciliation job self-heals that ordering
-  // (refunds/create before orders/paid is possible — ordering isn't guaranteed).
-  const orderId = orderGid(refund.order_id);
-  const earnEntry = await findEarnEntry(deps.ledger, shopDomain, orderId);
-  if (!earnEntry) {
-    return {
-      handled: true,
-      action: 'no earn entry for refunded order yet (reconciliation will catch up)',
-    };
-  }
-
   const settings = await deps.settings.get(shopDomain);
-  const draft = refundReversalEntry({
+  const action = await reverseOrderRefund({
+    ledger: deps.ledger,
+    referrals: deps.referrals,
+    settings,
     shopDomain,
-    customerId: earnEntry.customerId,
-    orderId,
+    orderId: orderGid(refund.order_id),
     refundId: refund.admin_graphql_api_id ?? refundGid(refund.id),
-    orderSourceName: earnEntry.rawSourceName ?? earnEntry.sourceName,
     refundedAmount,
-    earnRate: settings.earnRate,
   });
-  if (!draft) return { handled: true, action: 'refund reversed zero points' };
-  const result = await deps.ledger.appendCapped(draft);
-  if (!result) return { handled: true, action: 'reversal capped to zero (no positive balance)' };
-  return {
-    handled: true,
-    action: result.inserted ? `reversed ${-result.entry.delta}` : 'reversal already recorded',
-  };
-}
-
-async function findEarnEntry(
-  ledger: LedgerStore,
-  shopDomain: string,
-  orderId: string,
-): Promise<PointsLedgerEntry | undefined> {
-  return ledger.findByOrder(shopDomain, orderId, 'earn');
+  return { handled: true, action };
 }

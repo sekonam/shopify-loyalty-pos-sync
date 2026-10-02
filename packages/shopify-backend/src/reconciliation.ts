@@ -1,12 +1,6 @@
-import {
-  earnEntryFromOrder,
-  effectiveEarnRate,
-  orderPaidKey,
-  refundKey,
-  refundReversalEntry,
-  type LedgerStore,
-} from '@loyalty/ledger';
-import { TIER_WINDOW_MS } from './webhooks.js';
+import { orderPaidKey, refundKey, type LedgerStore } from '@loyalty/ledger';
+import { computeOrderEarn, reverseOrderRefund } from './earn-policy.js';
+import type { ReferralStore } from './referrals.js';
 import type { SettingsStore } from './settings.js';
 
 /**
@@ -71,7 +65,12 @@ export interface ReconciliationResult {
 export async function reconcileShop(
   shopDomain: string,
   since: Date,
-  deps: { client: AdminOrdersClient; ledger: LedgerStore; settings: SettingsStore },
+  deps: {
+    client: AdminOrdersClient;
+    ledger: LedgerStore;
+    settings: SettingsStore;
+    referrals: ReferralStore;
+  },
   now: () => Date = () => new Date(),
 ): Promise<ReconciliationResult> {
   const settings = await deps.settings.get(shopDomain);
@@ -89,53 +88,39 @@ export async function reconcileShop(
 
       const paid = PAID_STATUSES.has(order.financialStatus ?? '');
       if (paid && !(await deps.ledger.hasEntry(shopDomain, orderPaidKey(order.id)))) {
-        // Same earn policy as the webhook path. Note the tier window is
+        // Shared earn policy with the webhook path. The tier window is
         // evaluated at correction time, not original order time — a
         // deliberate simplification; the divergence is at most one tier
         // step on orders healed long after the fact.
-        const earned365 = await deps.ledger.earnedSince(
+        const { policy, draft } = await computeOrderEarn({
+          ledger: deps.ledger,
+          settings,
           shopDomain,
-          order.customerId,
-          new Date(Date.now() - TIER_WINDOW_MS),
-        );
-        const policy = effectiveEarnRate({
-          baseEarnRate: settings.earnRate,
+          customerId: order.customerId,
+          orderId: order.id,
           orderSourceName: order.sourceName,
-          channelRules: settings.channelRules,
-          excludedSources: settings.excludedSources,
-          tiers: settings.tiers,
-          earned365,
+          totalPrice: order.totalPrice,
         });
-        if (policy.kind === 'earn') {
-          const draft = earnEntryFromOrder({
-            shopDomain,
-            customerId: order.customerId,
-            orderId: order.id,
-            orderSourceName: order.sourceName,
-            totalPrice: order.totalPrice,
-            earnRate: policy.rate,
-          });
-          if (draft) {
-            const { inserted } = await deps.ledger.append({ ...draft, reason: 'reconciliation' });
-            if (inserted) earnsAdded += 1;
-          }
+        if (policy.kind === 'earn' && draft) {
+          const { inserted } = await deps.ledger.append({ ...draft, reason: 'reconciliation' });
+          if (inserted) earnsAdded += 1;
         }
       }
 
       for (const refund of order.refunds) {
         if (await deps.ledger.hasEntry(shopDomain, refundKey(refund.id))) continue;
-        const draft = refundReversalEntry({
+        // Shared reversal: guarded by the order's own earn entry, so an
+        // excluded/disabled order that earned nothing is never charged.
+        const action = await reverseOrderRefund({
+          ledger: deps.ledger,
+          referrals: deps.referrals,
+          settings,
           shopDomain,
-          customerId: order.customerId,
           orderId: order.id,
           refundId: refund.id,
-          orderSourceName: order.sourceName,
           refundedAmount: refund.totalRefunded,
-          earnRate: settings.earnRate,
         });
-        if (!draft) continue;
-        const result = await deps.ledger.appendCapped({ ...draft, reason: 'reconciliation' });
-        if (result?.inserted) reversalsAdded += 1;
+        if (action.startsWith('reversed')) reversalsAdded += 1;
       }
     }
     cursor = page.nextCursor;

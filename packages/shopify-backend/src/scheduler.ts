@@ -1,6 +1,7 @@
 import type { LedgerStore } from '@loyalty/ledger';
 import type { TokenProvider } from './admin-client.js';
 import { RECONCILIATION_OVERLAP_MS, reconcileShop, type AdminOrdersClient } from './reconciliation.js';
+import type { ReferralStore } from './referrals.js';
 import type { SettingsStore } from './settings.js';
 import type { Db } from './db.js';
 
@@ -81,6 +82,7 @@ export interface SchedulerDeps {
   client: AdminOrdersClient;
   ledger: LedgerStore;
   settings: SettingsStore;
+  referrals: ReferralStore;
   log: (msg: string, extra?: Record<string, unknown>) => void;
   /** First run for a shop with no prior checkpoint looks back this far. */
   initialLookbackMs?: number;

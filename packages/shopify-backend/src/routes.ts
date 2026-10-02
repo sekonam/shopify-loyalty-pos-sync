@@ -11,12 +11,15 @@ import { cors } from 'hono/cors';
 import { adminPageHtml } from './admin-page.js';
 import { verifyWebhookHmac } from './hmac.js';
 import { verifySessionToken } from './session-token.js';
-import { processWebhook, TIER_WINDOW_MS, type WebhookDeps } from './webhooks.js';
+import { processWebhook, type WebhookDeps } from './webhooks.js';
+import { TIER_WINDOW_MS } from './earn-policy.js';
+import type { AwardBatchStore, AwardResult } from './awards.js';
 import type { SettingsPatch, SettingsStore } from './settings.js';
 
 export interface AppDeps extends WebhookDeps {
   ledger: LedgerStore;
   settings: SettingsStore;
+  awardBatches: AwardBatchStore;
   apiSecret: string;
   apiKey: string;
 }
@@ -136,6 +139,13 @@ export function createApp(deps: AppDeps): Hono<Env> {
       deps.ledger.balance(shopDomain, customerId),
       deps.settings.get(shopDomain),
     ]);
+    // Referral eligibility is the BACKEND's rule (no purchase earn from any
+    // order yet) — the checkout UI must render from this flag, not re-derive
+    // it from the balance (a loyal customer redeemed to 0 is NOT eligible).
+    let referralEligible: boolean | null = null;
+    if (tokenKind(c.get('tokenSub')) === 'customer' && settings.referral?.enabled) {
+      referralEligible = !(await deps.ledger.hasEarnFromOtherOrder(shopDomain, customerId, ''));
+    }
     let tier: { name: string; multiplier: string; earned365: number } | null = null;
     if (settings.tiers?.length) {
       const earned365 = await deps.ledger.earnedSince(
@@ -155,6 +165,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
       // redemption in a different presentment currency (v1 single-currency).
       currency: settings.currency ?? null,
       tier,
+      referralEligible,
       maxDiscountAmount: redemptionDiscountAmount(
         Math.max(balance, 0),
         settings.redemptionRate,
@@ -323,7 +334,11 @@ export function createApp(deps: AppDeps): Hono<Env> {
       );
     }
     const shopDomain = c.get('shopDomain');
-    const results: Array<{ customerId: string; applied: number }> = [];
+    // A replayed batch returns its original outcome verbatim — covers rows
+    // that wrote no ledger entry (deductions capped to nothing).
+    const replay = await deps.awardBatches.get(shopDomain, batchId);
+    if (replay) return c.json({ batchId, results: replay, replayed: true });
+    const results: AwardResult[] = [];
     for (const [i, award] of awards.entries()) {
       const draft = {
         shopDomain,
@@ -344,6 +359,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
         });
       }
     }
+    await deps.awardBatches.put(shopDomain, batchId, results);
     return c.json({ batchId, results });
   });
 

@@ -12,6 +12,7 @@ const balancePayload = {
   redemptionRate: '100',
   currency: 'USD',
   tier: null,
+  referralEligible: null,
   maxDiscountAmount: '2.50',
 };
 
@@ -104,7 +105,7 @@ describe('checkout loyalty block', () => {
     expect(redeemButton()).toBeUndefined();
   });
 
-  it('shows tier, advocate share code, and a referral input for zero-balance customers', async () => {
+  it('shows tier, advocate share code, and a referral input for backend-eligible customers', async () => {
     extension.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/referral-code')) {
@@ -118,6 +119,8 @@ describe('checkout loyalty block', () => {
           ...balancePayload,
           balance: 0,
           tier: { name: 'Gold', multiplier: '2', earned365: 1500 },
+          // The backend decides eligibility — the UI must not infer it from balance.
+          referralEligible: true,
           maxDiscountAmount: '0.00',
         }),
         { status: 200 },

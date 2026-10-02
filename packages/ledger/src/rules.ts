@@ -100,6 +100,7 @@ export function earnEntryFromOrder(input: EarnInput): LedgerEntryDraft | null {
     sourceName,
     ...(rawSourceName !== undefined ? { rawSourceName } : {}),
     delta,
+    earnRate: input.earnRate,
     reason: 'earn',
     idempotencyKey: orderPaidKey(input.orderId),
   };

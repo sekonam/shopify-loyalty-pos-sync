@@ -6,6 +6,8 @@ export * from './receipts.js';
 export * from './settings.js';
 export * from './compliance.js';
 export * from './referrals.js';
+export * from './awards.js';
+export * from './earn-policy.js';
 export * from './webhooks.js';
 export * from './reconciliation.js';
 export * from './admin-client.js';

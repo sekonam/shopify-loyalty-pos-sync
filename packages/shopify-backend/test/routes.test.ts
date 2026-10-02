@@ -107,6 +107,7 @@ describe('GET /api/balance', () => {
       redemptionRate: '100',
       currency: 'USD',
       tier: null,
+      referralEligible: null,
       maxDiscountAmount: '2.50',
     });
   });

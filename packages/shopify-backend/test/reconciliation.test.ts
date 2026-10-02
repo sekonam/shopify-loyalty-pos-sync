@@ -33,6 +33,7 @@ describe('reconcileShop', () => {
       client: clientOf([[order()]]),
       ledger: deps.ledger,
       settings: deps.settings,
+      referrals: deps.referrals,
     });
     expect(result).toMatchObject({ ordersSeen: 1, earnsAdded: 1, reversalsAdded: 0 });
     const [entry] = await deps.ledger.entries(SHOP, CUSTOMER);
@@ -50,6 +51,7 @@ describe('reconcileShop', () => {
       client: clientOf([[order()]]),
       ledger: deps.ledger,
       settings: deps.settings,
+      referrals: deps.referrals,
     });
     // The dropped webhook finally arrives:
     await processWebhook(
@@ -79,6 +81,7 @@ describe('reconcileShop', () => {
       client: clientOf([[order()]]),
       ledger: deps.ledger,
       settings: deps.settings,
+      referrals: deps.referrals,
     });
     expect(result.earnsAdded).toBe(0);
     expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(50);
@@ -93,6 +96,7 @@ describe('reconcileShop', () => {
       client: clientOf([[withRefund]]),
       ledger: deps.ledger,
       settings: deps.settings,
+      referrals: deps.referrals,
     });
     // Earn 50 then reverse min(80, 50) = 50.
     expect(result).toMatchObject({ earnsAdded: 1, reversalsAdded: 1 });
@@ -118,6 +122,7 @@ describe('reconcileShop', () => {
       ]),
       ledger: deps.ledger,
       settings: deps.settings,
+      referrals: deps.referrals,
     });
     expect(result).toMatchObject({ ordersSeen: 3, earnsAdded: 1 });
   });
@@ -135,6 +140,7 @@ describe('reconcileShop', () => {
       ]),
       ledger: deps.ledger,
       settings: deps.settings,
+      referrals: deps.referrals,
     });
     expect(result.earnsAdded).toBe(1); // only the PARTIALLY_REFUNDED one
     expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(50);

@@ -6,6 +6,9 @@ export interface ReferralRecord {
   friendCustomerId: string;
   code: string;
   orderId: string;
+  /** Amounts actually granted — the clawback source of truth. */
+  advocatePoints: number;
+  friendPoints: number;
 }
 
 export interface ReferralStore {
@@ -14,11 +17,19 @@ export interface ReferralStore {
   /** Who owns a code; undefined for unknown codes. */
   advocateFor(shopDomain: string, code: string): Promise<string | undefined>;
   /**
-   * Records the referral if this friend has never been referred before.
-   * Returns false when a referral for the friend already exists (the
+   * Records the referral unless this friend was referred before (the
    * one-reward-per-friend guard — BON's class of repeatable-referral bugs).
+   * Always returns the authoritative record: `created` false means an
+   * earlier one stood, and callers must check whether it names the SAME
+   * order (a webhook redelivery, which must still re-append the idempotent
+   * reward entries) or a different one (a real repeat attempt — refuse).
    */
-  recordIfFirst(shopDomain: string, referral: ReferralRecord): Promise<boolean>;
+  recordOrGet(
+    shopDomain: string,
+    referral: ReferralRecord,
+  ): Promise<{ created: boolean; record: ReferralRecord }>;
+  /** The referral whose qualifying order this is, if any (refund clawback). */
+  byOrder(shopDomain: string, orderId: string): Promise<ReferralRecord | undefined>;
 }
 
 const newCode = (): string => randomBytes(5).toString('base64url').toUpperCase().replace(/[^A-Z0-9]/g, 'X');
@@ -43,11 +54,22 @@ export class InMemoryReferralStore implements ReferralStore {
     return this.byCode.get(`${shopDomain}${code.toUpperCase()}`);
   }
 
-  async recordIfFirst(shopDomain: string, referral: ReferralRecord): Promise<boolean> {
+  async recordOrGet(
+    shopDomain: string,
+    referral: ReferralRecord,
+  ): Promise<{ created: boolean; record: ReferralRecord }> {
     const key = `${shopDomain}${referral.friendCustomerId}`;
-    if (this.referred.has(key)) return false;
+    const existing = this.referred.get(key);
+    if (existing) return { created: false, record: existing };
     this.referred.set(key, referral);
-    return true;
+    return { created: true, record: referral };
+  }
+
+  async byOrder(shopDomain: string, orderId: string): Promise<ReferralRecord | undefined> {
+    for (const [key, record] of this.referred) {
+      if (key.startsWith(`${shopDomain}`) && record.orderId === orderId) return record;
+    }
+    return undefined;
   }
 }
 
@@ -89,19 +111,50 @@ export class PgReferralStore implements ReferralStore {
     return rows[0]?.customer_id as string | undefined;
   }
 
-  async recordIfFirst(shopDomain: string, referral: ReferralRecord): Promise<boolean> {
-    const { rowCount } = await this.db.query(
-      `insert into referral (shop_domain, friend_customer_id, advocate_customer_id, code, order_id)
-       values ($1, $2, $3, $4, $5)
-       on conflict (shop_domain, friend_customer_id) do nothing`,
+  async recordOrGet(
+    shopDomain: string,
+    referral: ReferralRecord,
+  ): Promise<{ created: boolean; record: ReferralRecord }> {
+    const { rows } = await this.db.query(
+      `insert into referral
+         (shop_domain, friend_customer_id, advocate_customer_id, code, order_id, advocate_points, friend_points)
+       values ($1, $2, $3, $4, $5, $6, $7)
+       on conflict (shop_domain, friend_customer_id) do nothing
+       returning *`,
       [
         shopDomain,
         referral.friendCustomerId,
         referral.advocateCustomerId,
         referral.code,
         referral.orderId,
+        referral.advocatePoints,
+        referral.friendPoints,
       ],
     );
-    return (rowCount ?? 0) > 0;
+    if (rows[0]) return { created: true, record: rowToReferral(rows[0]) };
+    const existing = await this.db.query(
+      'select * from referral where shop_domain = $1 and friend_customer_id = $2',
+      [shopDomain, referral.friendCustomerId],
+    );
+    return { created: false, record: rowToReferral(existing.rows[0]) };
   }
+
+  async byOrder(shopDomain: string, orderId: string): Promise<ReferralRecord | undefined> {
+    const { rows } = await this.db.query(
+      'select * from referral where shop_domain = $1 and order_id = $2 limit 1',
+      [shopDomain, orderId],
+    );
+    return rows[0] ? rowToReferral(rows[0]) : undefined;
+  }
+}
+
+function rowToReferral(row: Record<string, unknown>): ReferralRecord {
+  return {
+    advocateCustomerId: row['advocate_customer_id'] as string,
+    friendCustomerId: row['friend_customer_id'] as string,
+    code: row['code'] as string,
+    orderId: row['order_id'] as string,
+    advocatePoints: Number(row['advocate_points'] ?? 0),
+    friendPoints: Number(row['friend_points'] ?? 0),
+  };
 }

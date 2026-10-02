@@ -190,6 +190,159 @@ describe('v2 referrals', () => {
   });
 });
 
+describe('review-fix regressions', () => {
+  const refundFor = (orderId: number, amount: string, refundId: number) => ({
+    id: refundId,
+    admin_graphql_api_id: `gid://shopify/Refund/${refundId}`,
+    order_id: orderId,
+    transactions: [{ kind: 'refund', status: 'success', amount }],
+  });
+  const deliverTopic = (
+    deps: ReturnType<typeof makeDeps>,
+    topic: string,
+    payload: unknown,
+    webhookId = randomUUID(),
+  ) =>
+    processWebhook(
+      { topic, shopDomain: SHOP, webhookId, rawBody: JSON.stringify(payload) },
+      deps,
+    );
+
+  it('a refund reverses at the rate the order ACTUALLY earned at, not today\'s base rate', async () => {
+    const deps = makeDeps();
+    await deps.settings.upsert(SHOP, { channelRules: { pos: { enabled: true, earnRate: '2' } } });
+    await deliver(deps, paidOrder({ source_name: 'pos' })); // $50 × 2 = 100
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(100);
+    const outcome = await deliverTopic(deps, 'refunds/create', refundFor(1001, '50.00', 9001));
+    expect(outcome).toMatchObject({ action: 'reversed 100' });
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(0);
+  });
+
+  it('reversals across partial refunds never exceed what the order earned', async () => {
+    const deps = makeDeps();
+    await deps.settings.upsert(SHOP, { channelRules: { pos: { enabled: true, earnRate: '0.5' } } });
+    await deliver(deps, paidOrder({ source_name: 'pos', total_price: '100.00' })); // earns 50
+    // Give the customer unrelated points that must NOT be touchable by this order's refunds.
+    await deps.ledger.append({
+      shopDomain: SHOP,
+      customerId: CUSTOMER,
+      sourceName: 'system',
+      delta: 500,
+      reason: 'adjustment',
+      idempotencyKey: 'seed-extra',
+    });
+    await deliverTopic(deps, 'refunds/create', refundFor(1001, '60.00', 9002)); // reverses min(30, 50)=30
+    const second = await deliverTopic(deps, 'refunds/create', refundFor(1001, '60.00', 9003));
+    // Only 20 of the order's earn remains reversible — never the unrelated 500.
+    expect(second).toMatchObject({ action: 'reversed 20' });
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(500);
+  });
+
+  it('a refund for an order that never earned (excluded source) reverses nothing', async () => {
+    const deps = makeDeps();
+    await deps.settings.upsert(SHOP, { excludedSources: ['amazon-marketplace'] });
+    await deps.ledger.append({
+      shopDomain: SHOP,
+      customerId: CUSTOMER,
+      sourceName: 'system',
+      delta: 150,
+      reason: 'adjustment',
+      idempotencyKey: 'seed-150',
+    });
+    await deliver(deps, paidOrder({ source_name: 'amazon-marketplace', total_price: '100.00' }));
+    const outcome = await deliverTopic(deps, 'refunds/create', refundFor(1001, '100.00', 9004));
+    expect(outcome).toMatchObject({ action: 'no earn entry for refunded order (nothing to reverse)' });
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(150);
+  });
+
+  it('a redelivered webhook completes referral rewards a crashed first delivery lost', async () => {
+    const deps = makeDeps();
+    await deps.settings.upsert(SHOP, {
+      referral: { enabled: true, advocatePoints: 200, friendPoints: 100 },
+    });
+    const code = await deps.referrals.codeFor(SHOP, CUSTOMER);
+    const friendOrder = paidOrder({
+      id: 10,
+      admin_graphql_api_id: 'gid://shopify/Order/10',
+      customer: { id: 77, admin_graphql_api_id: FRIEND },
+      note_attributes: [{ name: 'loyalty_referral', value: code }],
+    });
+    // First delivery: the advocate reward append throws AFTER the friend's
+    // earn landed and the referral record was consumed.
+    const realAppend = deps.ledger.append.bind(deps.ledger);
+    let throwOnReferral = true;
+    deps.ledger.append = async (draft) => {
+      if (throwOnReferral && draft.reason === 'referral_reward') {
+        throwOnReferral = false;
+        throw new Error('db blip');
+      }
+      return realAppend(draft);
+    };
+    const wid = randomUUID();
+    await expect(
+      deliverTopic(deps, 'orders/paid', friendOrder, wid),
+    ).rejects.toThrow('db blip');
+    // Shopify redelivers; the earn exists (same order), the record exists
+    // (same order) — rewards must still land, exactly once.
+    const retry = await deliverTopic(deps, 'orders/paid', friendOrder, wid);
+    expect(retry).toMatchObject({
+      action: 'earn already recorded; referral rewarded (advocate +200, friend +100)',
+    });
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(200);
+    expect(await deps.ledger.balance(SHOP, FRIEND)).toBe(150);
+  });
+
+  it('an excluded-source order neither rewards a referral nor consumes the friend\'s slot', async () => {
+    const deps = makeDeps();
+    await deps.settings.upsert(SHOP, {
+      excludedSources: ['amazon-marketplace'],
+      referral: { enabled: true, advocatePoints: 200, friendPoints: 100 },
+    });
+    const code = await deps.referrals.codeFor(SHOP, CUSTOMER);
+    const mkOrder = (id: number, source: string) =>
+      paidOrder({
+        id,
+        admin_graphql_api_id: `gid://shopify/Order/${id}`,
+        source_name: source,
+        customer: { id: 77, admin_graphql_api_id: FRIEND },
+        note_attributes: [{ name: 'loyalty_referral', value: code }],
+      });
+    const excluded = await deliverTopic(deps, 'orders/paid', mkOrder(20, 'amazon-marketplace'));
+    expect(excluded).toMatchObject({ action: "no earn: source 'amazon-marketplace' is excluded from earning" });
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(0);
+    // The slot survives: a later eligible order still rewards.
+    const eligible = await deliverTopic(deps, 'orders/paid', mkOrder(21, 'web'));
+    expect(eligible).toMatchObject({
+      action: 'earned 50; referral rewarded (advocate +200, friend +100)',
+    });
+  });
+
+  it('fully refunding the qualifying order claws back both referral rewards', async () => {
+    const deps = makeDeps();
+    await deps.settings.upsert(SHOP, {
+      referral: { enabled: true, advocatePoints: 200, friendPoints: 100 },
+    });
+    const code = await deps.referrals.codeFor(SHOP, CUSTOMER);
+    await deliverTopic(
+      deps,
+      'orders/paid',
+      paidOrder({
+        id: 30,
+        admin_graphql_api_id: 'gid://shopify/Order/30',
+        total_price: '60.00',
+        customer: { id: 77, admin_graphql_api_id: FRIEND },
+        note_attributes: [{ name: 'loyalty_referral', value: code }],
+      }),
+    );
+    expect(await deps.ledger.balance(SHOP, FRIEND)).toBe(160);
+    const outcome = await deliverTopic(deps, 'refunds/create', refundFor(30, '60.00', 9100));
+    expect((outcome as { action: string }).action).toContain('reversed 60');
+    expect((outcome as { action: string }).action).toContain('referral clawed back');
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(0); // advocate -200
+    expect(await deps.ledger.balance(SHOP, FRIEND)).toBe(0); // 160 - 60 - 100
+  });
+});
+
 describe('v2 awards tool', () => {
   const authedPost = async (body: unknown) =>
     new Request('http://localhost/api/awards', {
@@ -221,10 +374,18 @@ describe('v2 awards tool', () => {
     ]);
     expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(500);
     expect(await deps.ledger.balance(SHOP, FRIEND)).toBe(0);
-    // Retry of the whole batch applies nothing new.
+    // Retry of the whole batch replays the ORIGINAL stored outcome verbatim
+    // (covers rows that wrote no ledger entry) and changes no balances.
     const retry = await app.request(await authedPost(body));
-    expect(((await retry.json()) as { results: { applied: number }[] }).results.every((r) => r.applied === 0)).toBe(true);
+    const replayBody = (await retry.json()) as { replayed?: boolean; results: unknown[] };
+    expect(replayBody.replayed).toBe(true);
+    expect(replayBody.results).toEqual([
+      { customerId: CUSTOMER, applied: 500 },
+      { customerId: FRIEND, applied: 250 },
+      { customerId: FRIEND, applied: -250 },
+    ]);
     expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(500);
+    expect(await deps.ledger.balance(SHOP, FRIEND)).toBe(0);
   });
 
   it('validates the batch and refuses customer tokens', async () => {

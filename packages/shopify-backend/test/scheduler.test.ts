@@ -128,6 +128,7 @@ describe('reconcileAllShops', () => {
       },
       ledger: deps.ledger,
       settings: deps.settings,
+      referrals: deps.referrals,
       log: () => undefined,
     });
     expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(50);
@@ -147,6 +148,7 @@ describe('reconcileAllShops', () => {
       },
       ledger: deps.ledger,
       settings: deps.settings,
+      referrals: deps.referrals,
       log: () => undefined,
     });
     expect(runStore.runs[0]).toMatchObject({ entriesAdded: 0 });

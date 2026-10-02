@@ -11,6 +11,11 @@
 > further decisions made the same day: v1 POS offline handling = disable-redemption-when-offline
 > (TECHNICAL-SPEC §7 resolved toward the simpler option), and v1 redemption rail = discount-based
 > as spec'd (store-credit rail stays a spike for when a dev store exists).
+>
+> **2026-10-02 — v1-scope rule explicitly lifted by the owner.** The v1 non-goals (channel-scoped
+> earning rules, VIP tiers, referrals, giveaway/point-award tooling) were confirmed as an
+> intentional scope change in a direct question-and-answer and implemented as the v1.x/v2 roadmap
+> phases. `PRODUCT-SPEC.md`'s non-goals list stays as the historical record of what v1 deferred.
 
 **Where this repository stands.** Nothing has been built. The idea has been through desk
 research and a passed kill test (see `PRODUCT-SPEC.md`), but no code exists, no Shopify Partner

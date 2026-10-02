@@ -190,11 +190,21 @@ describe.skipIf(process.env['SKIP_PG_TESTS'] === '1')('PgLedgerStore (Postgres)'
       friendCustomerId: friend,
       code,
       orderId: 'gid://shopify/Order/1',
+      advocatePoints: 200,
+      friendPoints: 100,
     };
-    expect(await referrals.recordIfFirst(SHOP, record)).toBe(true);
-    expect(
-      await referrals.recordIfFirst(SHOP, { ...record, orderId: 'gid://shopify/Order/2' }),
-    ).toBe(false);
+    const first = await referrals.recordOrGet(SHOP, record);
+    expect(first.created).toBe(true);
+    const repeat = await referrals.recordOrGet(SHOP, {
+      ...record,
+      orderId: 'gid://shopify/Order/2',
+    });
+    expect(repeat.created).toBe(false);
+    expect(repeat.record.orderId).toBe('gid://shopify/Order/1');
+    expect(repeat.record.advocatePoints).toBe(200);
+    expect(await referrals.byOrder(SHOP, 'gid://shopify/Order/1')).toMatchObject({
+      friendCustomerId: friend,
+    });
   });
 
   it('settings config document round-trips and merges per-field', async () => {

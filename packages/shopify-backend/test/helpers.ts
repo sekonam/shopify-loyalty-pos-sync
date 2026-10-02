@@ -5,6 +5,7 @@ import { InMemoryReceiptStore } from '../src/receipts.js';
 import { InMemorySettingsStore } from '../src/settings.js';
 import { InMemoryComplianceStore } from '../src/compliance.js';
 import { InMemoryReferralStore } from '../src/referrals.js';
+import { InMemoryAwardBatchStore } from '../src/awards.js';
 import { createApp, type AppDeps } from '../src/routes.js';
 
 export const API_SECRET = 'test-secret';
@@ -17,6 +18,7 @@ export function makeDeps(): AppDeps & {
   receipts: InMemoryReceiptStore;
   compliance: InMemoryComplianceStore;
   referrals: InMemoryReferralStore;
+  awardBatches: InMemoryAwardBatchStore;
 } {
   return {
     ledger: new InMemoryLedgerStore(),
@@ -24,6 +26,7 @@ export function makeDeps(): AppDeps & {
     receipts: new InMemoryReceiptStore(),
     compliance: new InMemoryComplianceStore(),
     referrals: new InMemoryReferralStore(),
+    awardBatches: new InMemoryAwardBatchStore(),
     apiSecret: API_SECRET,
     apiKey: API_KEY,
   };

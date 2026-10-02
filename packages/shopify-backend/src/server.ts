@@ -8,6 +8,7 @@ import { PgReceiptStore } from './receipts.js';
 import { PgSettingsStore } from './settings.js';
 import { PgComplianceStore } from './compliance.js';
 import { PgReferralStore } from './referrals.js';
+import { PgAwardBatchStore } from './awards.js';
 import { createApp } from './routes.js';
 import { GraphqlAdminOrdersClient } from './admin-client.js';
 import { PgReconRunStore, startReconciliationLoop } from './scheduler.js';
@@ -21,13 +22,15 @@ await migrate(db, migrationsDir);
 const log = (msg: string, extra?: Record<string, unknown>) => console.log(msg, extra ?? '');
 const ledger = new PgLedgerStore(db);
 const settings = new PgSettingsStore(db);
+const referrals = new PgReferralStore(db);
 
 const app = createApp({
   ledger,
   settings,
   receipts: new PgReceiptStore(db),
   compliance: new PgComplianceStore(db),
-  referrals: new PgReferralStore(db),
+  referrals,
+  awardBatches: new PgAwardBatchStore(db),
   apiSecret: config.apiSecret,
   apiKey: config.apiKey,
   log,
@@ -41,6 +44,7 @@ startReconciliationLoop({
   client: new GraphqlAdminOrdersClient(runs),
   ledger,
   settings,
+  referrals,
   log,
 });
 

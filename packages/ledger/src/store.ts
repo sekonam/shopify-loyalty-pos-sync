@@ -71,6 +71,10 @@ export interface LedgerStore {
    * points never demotes; referral/adjustment credits don't count.
    */
   earnedSince(shopDomain: string, customerId: string, since: Date): Promise<number>;
+  /** True when the customer has a purchase earn from any OTHER order (referral first-order test). */
+  hasEarnFromOtherOrder(shopDomain: string, customerId: string, orderId: string): Promise<boolean>;
+  /** Totals for one order: points earned and points already reversed against it. */
+  orderDeltas(shopDomain: string, orderId: string): Promise<{ earned: number; reversed: number }>;
 }
 
 /**
@@ -199,6 +203,35 @@ export class InMemoryLedgerStore implements LedgerStore {
           e.createdAt >= since,
       )
       .reduce((sum, e) => sum + e.delta, 0);
+  }
+
+  async hasEarnFromOtherOrder(
+    shopDomain: string,
+    customerId: string,
+    orderId: string,
+  ): Promise<boolean> {
+    return (this.entriesByShop.get(shopDomain) ?? []).some(
+      (e) =>
+        e.customerId === customerId &&
+        e.delta > 0 &&
+        (e.reason === 'earn' || e.reason === 'reconciliation') &&
+        e.orderId !== undefined &&
+        e.orderId !== orderId,
+    );
+  }
+
+  async orderDeltas(
+    shopDomain: string,
+    orderId: string,
+  ): Promise<{ earned: number; reversed: number }> {
+    let earned = 0;
+    let reversed = 0;
+    for (const e of this.entriesByShop.get(shopDomain) ?? []) {
+      if (e.orderId !== orderId) continue;
+      if ((e.reason === 'earn' || e.reason === 'reconciliation') && e.delta > 0) earned += e.delta;
+      if (e.reason === 'refund_reversal') reversed += -e.delta;
+    }
+    return { earned, reversed };
   }
 
   private appendUnlocked(draft: LedgerEntryDraft): AppendResult {

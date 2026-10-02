@@ -26,6 +26,12 @@ export interface PointsLedgerEntry {
   rawSourceName?: string;
   /** Positive = earn, negative = redeem/reversal. Never zero. */
   delta: number;
+  /**
+   * The effective rate this earn was computed at (channel/tier applied).
+   * Stored so refund reversals mirror what the order ACTUALLY earned, even
+   * after settings change — never recomputed from current settings.
+   */
+  earnRate?: string;
   reason: LedgerReason;
   redemptionAttemptId?: string;
   idempotencyKey: string;

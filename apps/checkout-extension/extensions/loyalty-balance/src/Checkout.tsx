@@ -17,6 +17,8 @@ interface BalanceResponse {
   redemptionRate: string;
   currency: string | null;
   tier: { name: string; multiplier: string; earned365: number } | null;
+  /** Backend-computed: this customer has no purchase earns yet and the program is on. */
+  referralEligible: boolean | null;
   maxDiscountAmount: string;
 }
 
@@ -229,7 +231,7 @@ function Checkout() {
           {phase.message}
         </s-banner>
       ) : null}
-      {info.balance === 0 && friendCodeState !== 'applied' ? (
+      {info.referralEligible === true && friendCodeState !== 'applied' ? (
         <s-stack direction="block">
           <s-text-field
             label="Have a referral code?"

@@ -167,6 +167,37 @@ export class PgLedgerStore implements LedgerStore {
     return rows[0].earned as number;
   }
 
+  async hasEarnFromOtherOrder(
+    shopDomain: string,
+    customerId: string,
+    orderId: string,
+  ): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `select 1 from points_ledger_entry
+        where shop_domain = $1 and customer_id = $2
+          and delta > 0 and reason in ('earn', 'reconciliation')
+          and order_id is not null and order_id <> $3
+        limit 1`,
+      [shopDomain, customerId, orderId],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  async orderDeltas(
+    shopDomain: string,
+    orderId: string,
+  ): Promise<{ earned: number; reversed: number }> {
+    const { rows } = await this.db.query(
+      `select
+         coalesce(sum(delta) filter (where reason in ('earn', 'reconciliation') and delta > 0), 0)::int as earned,
+         coalesce(sum(-delta) filter (where reason = 'refund_reversal'), 0)::int as reversed
+       from points_ledger_entry
+       where shop_domain = $1 and order_id = $2`,
+      [shopDomain, orderId],
+    );
+    return { earned: rows[0].earned as number, reversed: rows[0].reversed as number };
+  }
+
   async entriesForShop(shopDomain: string, limit = 10_000): Promise<PointsLedgerEntry[]> {
     const { rows } = await this.db.query(
       `select * from points_ledger_entry
@@ -211,8 +242,8 @@ export class PgLedgerStore implements LedgerStore {
     const inserted = await client.query(
       `insert into points_ledger_entry
          (shop_domain, customer_id, order_id, refund_id, source_name, raw_source_name,
-          delta, reason, redemption_attempt_id, idempotency_key)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          delta, earn_rate, reason, redemption_attempt_id, idempotency_key)
+       values ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9, $10, $11)
        on conflict (shop_domain, idempotency_key) do nothing
        returning *`,
       [
@@ -223,6 +254,7 @@ export class PgLedgerStore implements LedgerStore {
         draft.sourceName,
         draft.rawSourceName ?? null,
         draft.delta,
+        draft.earnRate ?? null,
         draft.reason,
         draft.redemptionAttemptId ?? null,
         draft.idempotencyKey,
@@ -268,6 +300,7 @@ function rowToEntry(row: Record<string, unknown>): PointsLedgerEntry {
     sourceName: row['source_name'] as PointsLedgerEntry['sourceName'],
     ...(row['raw_source_name'] != null ? { rawSourceName: row['raw_source_name'] as string } : {}),
     delta: row['delta'] as number,
+    ...(row['earn_rate'] != null ? { earnRate: String(row['earn_rate']) } : {}),
     reason: row['reason'] as PointsLedgerEntry['reason'],
     ...(row['redemption_attempt_id'] != null
       ? { redemptionAttemptId: row['redemption_attempt_id'] as string }

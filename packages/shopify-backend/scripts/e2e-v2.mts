@@ -160,7 +160,8 @@ const results = awards.body['results'] as Array<{ applied: number }>;
 check(results[0]?.applied === 1000 && results[1]?.applied === -1000, `awards capped: ${JSON.stringify(results)}`);
 check((await balance(awardTarget))['balance'] === 0, 'award target ends at 0');
 
-// ---- restore neutral settings so the dev console behaves normally ----
+// ---- restore neutral settings so other scripts (e2e-seed) and the dev
+// console see untouched behavior on this shared dev shop ----
 await api('/api/settings', 'staff', {
   method: 'PUT',
   headers: { 'content-type': 'application/json' },
@@ -172,6 +173,8 @@ await api('/api/settings', 'staff', {
       other: { enabled: true },
     },
     excludedSources: [],
+    tiers: [],
+    referral: { enabled: false, advocatePoints: 200, friendPoints: 100 },
   }),
 });
 

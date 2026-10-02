@@ -10,6 +10,7 @@ export interface BalanceResponse {
   balance: number;
   minRedemption: number;
   redemptionRate: string;
+  tier?: { name: string; multiplier: string; earned365: number } | null;
   maxDiscountAmount: string;
 }
 

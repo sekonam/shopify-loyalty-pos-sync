@@ -11,6 +11,7 @@ const balancePayload = {
   minRedemption: 100,
   redemptionRate: '100',
   currency: 'USD',
+  tier: null,
   maxDiscountAmount: '2.50',
 };
 
@@ -101,6 +102,49 @@ describe('checkout loyalty block', () => {
     expect(sent.customerId).toBeUndefined();
     // One redemption per checkout: the form is gone after success.
     expect(redeemButton()).toBeUndefined();
+  });
+
+  it('shows tier, advocate share code, and a referral input for zero-balance customers', async () => {
+    extension.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/referral-code')) {
+        return new Response(
+          JSON.stringify({ code: 'AB12C', advocatePoints: 200, friendPoints: 100 }),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          ...balancePayload,
+          balance: 0,
+          tier: { name: 'Gold', multiplier: '2', earned365: 1500 },
+          maxDiscountAmount: '0.00',
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const applyAttributeChange = vi.fn().mockResolvedValue({ type: 'success' });
+    (extension.shopify as unknown as Record<string, unknown>)['applyAttributeChange'] =
+      applyAttributeChange;
+
+    await extension.render();
+    await waitFor(() => expect(document.body.textContent).toContain('You have 0 points'));
+    expect(document.body.textContent).toContain('Gold member — 2× points');
+    await waitFor(() => expect(document.body.textContent).toContain('Share your code AB12C'));
+
+    const field = document.body.querySelector('s-text-field') as HTMLElement & { value: string };
+    field.value = 'zz99x';
+    fireEvent(field, new Event('change', { bubbles: true }));
+    const apply = Array.from(document.body.querySelectorAll('s-button')).find((b) =>
+      b.textContent?.includes('Apply referral code'),
+    ) as HTMLElement;
+    fireEvent.click(apply);
+    await waitFor(() => expect(document.body.textContent).toContain('Referral code applied'));
+    expect(applyAttributeChange).toHaveBeenCalledWith({
+      type: 'updateAttribute',
+      key: 'loyalty_referral',
+      value: 'ZZ99X', // normalized upper-case
+    });
   });
 
   it('hides itself when the checkout currency differs from the shop currency', async () => {

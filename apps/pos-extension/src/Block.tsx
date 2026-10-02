@@ -6,6 +6,7 @@ import { balanceView, failedFetch, type FetchState } from './state.js';
 
 function Block() {
   const [lastFetch, setLastFetch] = useState<FetchState>(undefined);
+  const [tierName, setTierName] = useState<string | undefined>(undefined);
   const [connection, setConnection] = useState(
     shopify.connectivity.current.value.internetConnected,
   );
@@ -21,7 +22,9 @@ function Block() {
     let cancelled = false;
     fetchBalance(customerGid(shopify.customer.id))
       .then((res) => {
-        if (!cancelled) setLastFetch({ ok: true, balance: res.balance, at: new Date() });
+        if (cancelled) return;
+        setLastFetch({ ok: true, balance: res.balance, at: new Date() });
+        setTierName(res.tier?.name);
       })
       .catch(() => {
         if (!cancelled) setLastFetch(failedFetch);
@@ -47,6 +50,7 @@ function Block() {
         ) : view.kind === 'loading' ? null : (
           <s-badge tone="warning">Not live</s-badge>
         )}
+        {tierName && view.kind === 'live' ? <s-badge>{tierName}</s-badge> : null}
       </s-stack>
     </s-pos-block>
   );

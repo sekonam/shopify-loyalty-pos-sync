@@ -16,7 +16,14 @@ interface BalanceResponse {
   minRedemption: number;
   redemptionRate: string;
   currency: string | null;
+  tier: { name: string; multiplier: string; earned365: number } | null;
   maxDiscountAmount: string;
+}
+
+interface ReferralInfo {
+  code: string;
+  advocatePoints: number;
+  friendPoints: number;
 }
 
 /** Presentment currency of this checkout, from the cost API. */
@@ -55,6 +62,9 @@ function Checkout() {
   // Survives a failed call so a retry replays the SAME attempt (idempotent
   // on the backend) instead of double-debiting; cleared on definitive outcome.
   const attemptIdRef = useRef<string | undefined>(undefined);
+  const [referral, setReferral] = useState<ReferralInfo | undefined>(undefined);
+  const [friendCode, setFriendCode] = useState('');
+  const [friendCodeState, setFriendCodeState] = useState<'idle' | 'applied' | 'failed'>('idle');
 
   useEffect(() => {
     if (backendUrl() === '') {
@@ -77,6 +87,12 @@ function Checkout() {
           return;
         }
         setInfo(body);
+        // Referral program info is optional (404 when disabled) — never blocks.
+        authedFetch('/api/referral-code')
+          .then(async (r) => {
+            if (r.ok && !cancelled) setReferral((await r.json()) as ReferralInfo);
+          })
+          .catch(() => undefined);
       })
       .catch(() => {
         if (!cancelled) setHidden(true);
@@ -85,6 +101,17 @@ function Checkout() {
       cancelled = true;
     };
   }, []);
+
+  const onApplyFriendCode = async () => {
+    const code = friendCode.trim().toUpperCase();
+    if (code === '') return;
+    const result = await shopify.applyAttributeChange({
+      type: 'updateAttribute',
+      key: 'loyalty_referral',
+      value: code,
+    });
+    setFriendCodeState(result.type === 'success' ? 'applied' : 'failed');
+  };
 
   if (hidden) return null;
   if (info === undefined) return <s-text>Loading loyalty balance…</s-text>;
@@ -172,6 +199,9 @@ function Checkout() {
     <s-stack direction="block">
       <s-heading>Loyalty points</s-heading>
       <s-text>{`You have ${info.balance} points (worth up to ${info.maxDiscountAmount}).`}</s-text>
+      {info.tier?.name ? (
+        <s-text>{`${info.tier.name} member — ${info.tier.multiplier}× points on every order.`}</s-text>
+      ) : null}
       {redeemed ? null : (
         <s-number-field
           label="Points to redeem"
@@ -198,6 +228,27 @@ function Checkout() {
         >
           {phase.message}
         </s-banner>
+      ) : null}
+      {info.balance === 0 && friendCodeState !== 'applied' ? (
+        <s-stack direction="block">
+          <s-text-field
+            label="Have a referral code?"
+            value={friendCode}
+            onChange={(e: Event) =>
+              setFriendCode((e.currentTarget as { value?: string } | null)?.value ?? '')
+            }
+          ></s-text-field>
+          <s-button onClick={onApplyFriendCode}>Apply referral code</s-button>
+          {friendCodeState === 'failed' ? (
+            <s-text tone="critical">Couldn't attach the code to this checkout.</s-text>
+          ) : null}
+        </s-stack>
+      ) : null}
+      {friendCodeState === 'applied' ? (
+        <s-text>Referral code applied — the bonus lands after this order is paid.</s-text>
+      ) : null}
+      {referral ? (
+        <s-text color="subdued">{`Share your code ${referral.code} — you get ${referral.advocatePoints} points, friends get ${referral.friendPoints}.`}</s-text>
       ) : null}
     </s-stack>
   );

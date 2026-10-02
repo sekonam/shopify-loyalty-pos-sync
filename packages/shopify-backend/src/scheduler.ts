@@ -5,7 +5,19 @@ import type { ReferralStore } from './referrals.js';
 import type { SettingsStore } from './settings.js';
 import type { Db } from './db.js';
 
-export interface ReconRunStore {
+/** What the merchant dashboard shows about ledger self-verification. */
+export interface ReconRunSummary {
+  finishedAt: Date | undefined;
+  ordersSeen: number;
+  entriesAdded: number;
+  error: string | undefined;
+}
+
+export interface ReconStatusSource {
+  lastRun(shopDomain: string): Promise<ReconRunSummary | undefined>;
+}
+
+export interface ReconRunStore extends ReconStatusSource {
   /** Start-of-window for the next run: last successful checkpoint, minus overlap. */
   nextSince(shopDomain: string): Promise<Date | undefined>;
   recordRun(run: {
@@ -46,6 +58,23 @@ export class PgReconRunStore implements ReconRunStore, TokenProvider {
        values ($1, now(), $2, $3, $4, $5)`,
       [run.shopDomain, run.checkpoint, run.ordersSeen, run.entriesAdded, run.error ?? null],
     );
+  }
+
+  async lastRun(shopDomain: string): Promise<ReconRunSummary | undefined> {
+    const { rows } = await this.db.query(
+      `select finished_at, orders_seen, entries_added, error
+         from reconciliation_run
+        where shop_domain = $1
+        order by started_at desc limit 1`,
+      [shopDomain],
+    );
+    if (!rows[0]) return undefined;
+    return {
+      finishedAt: rows[0].finished_at ? new Date(rows[0].finished_at as string) : undefined,
+      ordersSeen: rows[0].orders_seen as number,
+      entriesAdded: rows[0].entries_added as number,
+      error: (rows[0].error as string | null) ?? undefined,
+    };
   }
 
   async shopsToReconcile(): Promise<string[]> {

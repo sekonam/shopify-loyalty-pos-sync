@@ -15,6 +15,17 @@ export interface AppendResult {
   inserted: boolean;
 }
 
+export interface LedgerStats {
+  /** Customers holding a positive balance. */
+  members: number;
+  /** Sum of all balances — the program's outstanding money-equivalent liability. */
+  outstandingPoints: number;
+  entryCount: number;
+  /** Points credited / debited inside the requested window. */
+  issuedInWindow: number;
+  redeemedInWindow: number;
+}
+
 export interface RedeemRequest {
   shopDomain: string;
   customerId: string;
@@ -75,6 +86,8 @@ export interface LedgerStore {
   hasEarnFromOtherOrder(shopDomain: string, customerId: string, orderId: string): Promise<boolean>;
   /** Totals for one order: points earned and points already reversed against it. */
   orderDeltas(shopDomain: string, orderId: string): Promise<{ earned: number; reversed: number }>;
+  /** Shop-wide program metrics for the merchant dashboard. */
+  stats(shopDomain: string, windowStart: Date): Promise<LedgerStats>;
 }
 
 /**
@@ -232,6 +245,33 @@ export class InMemoryLedgerStore implements LedgerStore {
       if (e.reason === 'refund_reversal') reversed += -e.delta;
     }
     return { earned, reversed };
+  }
+
+  async stats(shopDomain: string, windowStart: Date): Promise<LedgerStats> {
+    const entries = this.entriesByShop.get(shopDomain) ?? [];
+    const balances = new Map<string, number>();
+    let issuedInWindow = 0;
+    let redeemedInWindow = 0;
+    for (const e of entries) {
+      balances.set(e.customerId, (balances.get(e.customerId) ?? 0) + e.delta);
+      if (e.createdAt >= windowStart) {
+        if (e.delta > 0) issuedInWindow += e.delta;
+        else redeemedInWindow += -e.delta;
+      }
+    }
+    let members = 0;
+    let outstandingPoints = 0;
+    for (const balance of balances.values()) {
+      if (balance > 0) members += 1;
+      outstandingPoints += balance;
+    }
+    return {
+      members,
+      outstandingPoints,
+      entryCount: entries.length,
+      issuedInWindow,
+      redeemedInWindow,
+    };
   }
 
   private appendUnlocked(draft: LedgerEntryDraft): AppendResult {

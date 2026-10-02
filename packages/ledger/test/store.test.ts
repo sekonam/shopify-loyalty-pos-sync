@@ -52,6 +52,33 @@ describe('InMemoryLedgerStore.append', () => {
   });
 });
 
+describe('InMemoryLedgerStore.stats', () => {
+  it('counts only positive balances as members and splits the window by direction', async () => {
+    const store = new InMemoryLedgerStore();
+    await store.append(earnDraft('1', 100));
+    await store.append({ ...earnDraft('2', 40), customerId: 'gid://shopify/Customer/2' });
+    // Spend customer 2 back down to zero: still a ledger participant, not a member.
+    await store.redeem({
+      shopDomain: SHOP,
+      customerId: 'gid://shopify/Customer/2',
+      channel: 'web',
+      requestedPoints: 40,
+      minRedemption: 1,
+      attemptId: 'a1',
+    });
+    const stats = await store.stats(SHOP, new Date(Date.now() - 60_000));
+    expect(stats).toEqual({
+      members: 1,
+      outstandingPoints: 100,
+      entryCount: 3,
+      issuedInWindow: 140,
+      redeemedInWindow: 40,
+    });
+    const future = await store.stats(SHOP, new Date(Date.now() + 60_000));
+    expect(future).toMatchObject({ issuedInWindow: 0, redeemedInWindow: 0, members: 1 });
+  });
+});
+
 describe('InMemoryLedgerStore.redeem', () => {
   it('applies a valid redemption and decrements the balance', async () => {
     const store = new InMemoryLedgerStore();

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { SignJWT } from 'jose';
 import { Hono } from 'hono';
+import { designSystemCss, logoMarkSvg } from './ui/theme.js';
 
 /**
  * LOCAL DEVELOPMENT ONLY — mounted by the server exclusively when
@@ -48,55 +49,100 @@ export function createDevApp(config: DevHarnessConfig): Hono {
 /** A stand-in for the checkout/POS widgets: same API calls, plain browser page. */
 function consolePage(shop: string): string {
   return `<!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Loyalty dev console</title>
-<style>
-  body { font: 14px system-ui, sans-serif; margin: 24px; max-width: 760px; }
-  fieldset { margin-bottom: 16px; }
-  label { margin-right: 8px; }
-  input { padding: 4px 6px; }
-  button { padding: 6px 12px; margin-right: 8px; }
-  pre { background: #f4f4f4; padding: 12px; min-height: 80px; white-space: pre-wrap; }
-  .ok { color: #0a7a2f; } .err { color: #b00020; }
+<style>${designSystemCss()}
+  .result { font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; margin: 0;
+            padding: var(--space-4); background: var(--surface-subdued); border-radius: var(--radius);
+            border: 1px solid var(--border); min-height: 96px; }
 </style>
 </head>
 <body>
-<h1>Loyalty dev console</h1>
-<p>Shop: <code>${shop}</code> · exercises the same <code>/api</code> endpoints the POS and
-checkout extensions call. <a href="/admin">Open the merchant admin →</a></p>
+<div class="page">
+  <header class="page-header">
+    <span class="mark">${logoMarkSvg}</span>
+    <div>
+      <h1 class="page-title">Dev console</h1>
+      <p class="page-subtitle">Drives the same <code>/api</code> endpoints the POS and checkout extensions call, against <strong>${shop}</strong>. Local development only.</p>
+    </div>
+    <div class="page-header-actions">
+      <a class="btn btn-sm" href="/admin">Merchant admin</a>
+    </div>
+  </header>
 
-<fieldset>
-  <legend>Customer</legend>
-  <label for="customer">Customer number</label>
-  <input id="customer" value="9001" inputmode="numeric" />
-</fieldset>
+  <div class="stack">
+    <div class="card">
+      <div class="card-header"><div>
+        <h2 class="card-title">Customer</h2>
+        <p class="card-description">The customer every call below acts on.</p>
+      </div></div>
+      <div class="card-body">
+        <div class="row">
+          <div class="field">
+            <label class="field-label" for="customer">Customer number</label>
+            <input class="input input-md" id="customer" value="9001" inputmode="numeric" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="points">Points to redeem</label>
+            <input class="input input-sm" id="points" value="100" inputmode="numeric" />
+          </div>
+        </div>
+      </div>
+    </div>
 
-<fieldset>
-  <legend>Act as the customer (checkout widget)</legend>
-  <button id="balance">Get balance</button>
-  <label for="points">Points</label>
-  <input id="points" value="100" inputmode="numeric" />
-  <button id="redeem-web">Redeem as customer (web)</button>
-</fieldset>
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="card-header"><div>
+          <h2 class="card-title">As the shopper</h2>
+          <p class="card-description">Customer session token, as the checkout extension holds.</p>
+        </div></div>
+        <div class="card-body"><div class="row">
+          <button class="btn" id="balance" type="button">Get balance</button>
+          <button class="btn btn-primary" id="redeem-web" type="button">Redeem online</button>
+          <button class="btn" id="referral" type="button">Referral code</button>
+        </div></div>
+      </div>
 
-<fieldset>
-  <legend>Act as staff (POS register)</legend>
-  <button id="balance-staff">Balance via staff token</button>
-  <button id="redeem-pos">Redeem as staff (pos)</button>
-  <button id="forbidden">Try settings with CUSTOMER token (must fail 403)</button>
-</fieldset>
+      <div class="card">
+        <div class="card-header"><div>
+          <h2 class="card-title">As store staff</h2>
+          <p class="card-description">Staff session token, as the POS extension holds.</p>
+        </div></div>
+        <div class="card-body"><div class="row">
+          <button class="btn" id="balance-staff" type="button">Get balance</button>
+          <button class="btn btn-primary" id="redeem-pos" type="button">Redeem at POS</button>
+          <button class="btn btn-critical" id="forbidden" type="button">Shopper hits settings (expect 403)</button>
+        </div></div>
+      </div>
+    </div>
 
-<pre id="out">Ready.</pre>
+    <div class="card">
+      <div class="card-header"><div>
+        <h2 class="card-title">Response</h2>
+        <p class="card-description" id="verdict">Pick an action above.</p>
+      </div><div class="row-end" id="status-badge"></div></div>
+      <div class="card-body"><pre class="result" id="out">Ready.</pre></div>
+    </div>
+  </div>
+</div>
 
 <script>
 const out = document.getElementById('out');
+const verdict = document.getElementById('verdict');
+const statusBadge = document.getElementById('status-badge');
 const gid = () => 'gid://shopify/Customer/' + document.getElementById('customer').value.trim();
 const pts = () => Number(document.getElementById('points').value);
 function show(label, status, body, good) {
-  out.textContent = label + ' -> HTTP ' + status + '\\n' + JSON.stringify(body, null, 2);
-  out.className = good ? 'ok' : 'err';
+  out.textContent = JSON.stringify(body, null, 2);
+  verdict.textContent = label;
+  statusBadge.textContent = '';
+  const badge = document.createElement('span');
+  badge.className = 'badge ' + (good ? 'badge-success' : 'badge-critical');
+  badge.textContent = 'HTTP ' + status + (good ? ' · as expected' : ' · unexpected');
+  statusBadge.appendChild(badge);
 }
 async function token(kind) {
   const q = kind === 'customer' ? '?kind=customer&customerId=' + encodeURIComponent(gid()) : '?kind=' + kind;
@@ -116,23 +162,25 @@ async function call(label, kind, path, init, expectOk) {
   }
 }
 document.getElementById('balance').onclick = () =>
-  call('balance (customer token)', 'customer', '/api/balance', {}, true);
+  call('Balance, shopper token', 'customer', '/api/balance', {}, true);
+document.getElementById('referral').onclick = () =>
+  call('Referral code, shopper token', 'customer', '/api/referral-code', {}, true);
 document.getElementById('balance-staff').onclick = () =>
-  call('balance (staff token)', 'staff', '/api/balance?customerId=' + encodeURIComponent(gid()), {}, true);
+  call('Balance, staff token', 'staff', '/api/balance?customerId=' + encodeURIComponent(gid()), {}, true);
 document.getElementById('redeem-web').onclick = () =>
-  call('redeem web', 'customer', '/api/redeem', {
+  call('Redeem online, shopper token', 'customer', '/api/redeem', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ points: pts(), attemptId: crypto.randomUUID(), channel: 'web' }),
   }, true);
 document.getElementById('redeem-pos').onclick = () =>
-  call('redeem pos', 'staff', '/api/redeem', {
+  call('Redeem at POS, staff token', 'staff', '/api/redeem', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ customerId: gid(), points: pts(), attemptId: crypto.randomUUID(), channel: 'pos' }),
   }, true);
 document.getElementById('forbidden').onclick = () =>
-  call('settings with customer token (expect 403)', 'customer', '/api/settings', {}, false);
+  call('Settings with a shopper token — must be refused', 'customer', '/api/settings', {}, false);
 </script>
 </body>
 </html>`;

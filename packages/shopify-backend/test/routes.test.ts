@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   makeApp,
+  makeDeps,
   paidOrder,
   sessionToken,
   webhookRequest,
@@ -28,6 +29,19 @@ describe('GET /admin', () => {
     expect(html).toContain('shopify-api-key');
     expect(html).toContain('test-client-id');
     expect(html).toContain('app-bridge.js');
+  });
+
+  it('ships the three sections and never interpolates data into markup', async () => {
+    const { app } = makeApp();
+    const html = await (await app.request('http://localhost/admin')).text();
+    for (const panel of ['panel-overview', 'panel-program', 'panel-ledger']) {
+      expect(html).toContain(panel);
+    }
+    expect(html).toContain('role="tablist"');
+    expect(html).toContain('prefers-color-scheme: dark');
+    // Dynamic values go through DOM properties only: no innerHTML assignment
+    // of fetched data anywhere in the page script.
+    expect(html).not.toMatch(/innerHTML\s*=/);
   });
 });
 
@@ -355,6 +369,79 @@ describe('customer identity resolution', () => {
     );
     expect(res.status).toBe(200);
     expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(100);
+  });
+});
+
+describe('GET /api/overview', () => {
+  it('reports program metrics, outstanding value, and configuration summary', async () => {
+    const { app, deps } = makeApp();
+    await app.request(webhookRequest('orders/paid', paidOrder({ total_price: '300.00' })));
+    await deps.ledger.redeem({
+      shopDomain: SHOP,
+      customerId: CUSTOMER,
+      channel: 'pos',
+      requestedPoints: 100,
+      minRedemption: 1,
+      attemptId: randomUUID(),
+    });
+    await deps.settings.upsert(SHOP, {
+      tiers: [{ name: 'Gold', minEarned365: 1000, multiplier: '2' }],
+      referral: { enabled: true, advocatePoints: 200, friendPoints: 100 },
+      excludedSources: ['amazon'],
+      channelRules: { mobile_app: { enabled: false } },
+    });
+
+    const res = await app.request(await authed('/overview'));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, any>;
+    expect(body.shopDomain).toBe(SHOP);
+    expect(body.currency).toBe('USD');
+    expect(body.stats).toMatchObject({
+      members: 1,
+      outstandingPoints: 200,
+      entryCount: 2,
+      issuedInWindow: 300,
+      redeemedInWindow: 100,
+    });
+    expect(body.outstandingValue).toBe('2.00');
+    expect(body.program).toEqual({
+      tiers: 1,
+      referralEnabled: true,
+      excludedSources: 1,
+      disabledChannels: ['mobile_app'],
+    });
+    expect(body.reconciliation).toBeNull(); // no status source wired in tests
+  });
+
+  it('surfaces the last reconciliation run when a status source is present', async () => {
+    const deps = makeDeps();
+    const finishedAt = new Date('2026-10-02T09:00:00Z');
+    const { app } = makeApp({
+      ...deps,
+      reconStatus: {
+        lastRun: async () => ({
+          finishedAt,
+          ordersSeen: 42,
+          entriesAdded: 2,
+          error: undefined,
+        }),
+      },
+    });
+    const res = await app.request(await authed('/overview'));
+    expect(((await res.json()) as Record<string, any>).reconciliation).toEqual({
+      finishedAt: finishedAt.toISOString(),
+      ordersSeen: 42,
+      entriesAdded: 2,
+      error: null,
+    });
+  });
+
+  it('is merchant-only', async () => {
+    const { app } = makeApp();
+    const res = await app.request(
+      await authed('/overview', {}, await sessionToken(SHOP, { sub: CUSTOMER })),
+    );
+    expect(res.status).toBe(403);
   });
 });
 

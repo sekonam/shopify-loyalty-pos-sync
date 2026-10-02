@@ -14,15 +14,20 @@ import { verifySessionToken } from './session-token.js';
 import { processWebhook, type WebhookDeps } from './webhooks.js';
 import { TIER_WINDOW_MS } from './earn-policy.js';
 import type { AwardBatchStore, AwardResult } from './awards.js';
+import type { ReconStatusSource } from './scheduler.js';
 import type { SettingsPatch, SettingsStore } from './settings.js';
 
 export interface AppDeps extends WebhookDeps {
   ledger: LedgerStore;
   settings: SettingsStore;
   awardBatches: AwardBatchStore;
+  /** Optional: powers the dashboard's "this app checks itself" status. */
+  reconStatus?: ReconStatusSource;
   apiSecret: string;
   apiKey: string;
 }
+
+const STATS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 type Env = { Variables: { shopDomain: string; tokenSub: string | undefined } };
 
@@ -261,6 +266,48 @@ export function createApp(deps: AppDeps): Hono<Env> {
       return c.json({ error: 'merchant session required' }, 403);
     }
     return next();
+  });
+
+  /**
+   * Dashboard metrics. The reconciliation block is the merchant-visible
+   * expression of the product's core claim — the app checks its own ledger
+   * against Shopify's order history and says when it last did.
+   */
+  merchant.get('/overview', async (c) => {
+    const shopDomain = c.get('shopDomain');
+    const windowStart = new Date(Date.now() - STATS_WINDOW_MS);
+    const [stats, settings, lastRun] = await Promise.all([
+      deps.ledger.stats(shopDomain, windowStart),
+      deps.settings.get(shopDomain),
+      deps.reconStatus?.lastRun(shopDomain) ?? Promise.resolve(undefined),
+    ]);
+    return c.json({
+      shopDomain,
+      currency: settings.currency ?? null,
+      windowDays: Math.round(STATS_WINDOW_MS / 86_400_000),
+      stats,
+      /** Outstanding points expressed as money at the current redemption rate. */
+      outstandingValue: redemptionDiscountAmount(
+        Math.max(stats.outstandingPoints, 0),
+        settings.redemptionRate,
+      ),
+      program: {
+        tiers: settings.tiers?.length ?? 0,
+        referralEnabled: settings.referral?.enabled ?? false,
+        excludedSources: settings.excludedSources?.length ?? 0,
+        disabledChannels: Object.entries(settings.channelRules ?? {})
+          .filter(([, rule]) => rule?.enabled === false)
+          .map(([channel]) => channel),
+      },
+      reconciliation: lastRun
+        ? {
+            finishedAt: lastRun.finishedAt?.toISOString() ?? null,
+            ordersSeen: lastRun.ordersSeen,
+            entriesAdded: lastRun.entriesAdded,
+            error: lastRun.error ?? null,
+          }
+        : null,
+    });
   });
 
   merchant.get('/entries', async (c) => {

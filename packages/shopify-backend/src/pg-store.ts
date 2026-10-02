@@ -1,6 +1,7 @@
 import type {
   AppendResult,
   LedgerEntryDraft,
+  LedgerStats,
   LedgerStore,
   PointsLedgerEntry,
   RedeemRequest,
@@ -196,6 +197,32 @@ export class PgLedgerStore implements LedgerStore {
       [shopDomain, orderId],
     );
     return { earned: rows[0].earned as number, reversed: rows[0].reversed as number };
+  }
+
+  async stats(shopDomain: string, windowStart: Date): Promise<LedgerStats> {
+    const { rows } = await this.db.query(
+      `with balances as (
+         select customer_id, sum(delta)::int as balance
+           from points_ledger_entry where shop_domain = $1
+          group by customer_id
+       )
+       select
+         (select count(*) from balances where balance > 0)::int as members,
+         (select coalesce(sum(balance), 0) from balances)::int as outstanding_points,
+         (select count(*) from points_ledger_entry where shop_domain = $1)::int as entry_count,
+         (select coalesce(sum(delta), 0) from points_ledger_entry
+           where shop_domain = $1 and delta > 0 and created_at >= $2)::int as issued,
+         (select coalesce(sum(-delta), 0) from points_ledger_entry
+           where shop_domain = $1 and delta < 0 and created_at >= $2)::int as redeemed`,
+      [shopDomain, windowStart],
+    );
+    return {
+      members: rows[0].members as number,
+      outstandingPoints: rows[0].outstanding_points as number,
+      entryCount: rows[0].entry_count as number,
+      issuedInWindow: rows[0].issued as number,
+      redeemedInWindow: rows[0].redeemed as number,
+    };
   }
 
   async entriesForShop(shopDomain: string, limit = 10_000): Promise<PointsLedgerEntry[]> {

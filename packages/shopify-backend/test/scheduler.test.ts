@@ -103,6 +103,17 @@ class FakeRunStore implements ReconRunStore {
   async shopsToReconcile(): Promise<string[]> {
     return this.shops;
   }
+  async lastRun() {
+    const last = this.runs.at(-1);
+    return last
+      ? {
+          finishedAt: last.checkpoint,
+          ordersSeen: last.ordersSeen,
+          entriesAdded: last.entriesAdded,
+          error: last.error,
+        }
+      : undefined;
+  }
 }
 
 describe('reconcileAllShops', () => {

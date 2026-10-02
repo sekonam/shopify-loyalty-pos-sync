@@ -23,6 +23,7 @@ const log = (msg: string, extra?: Record<string, unknown>) => console.log(msg, e
 const ledger = new PgLedgerStore(db);
 const settings = new PgSettingsStore(db);
 const referrals = new PgReferralStore(db);
+const runs = new PgReconRunStore(db);
 
 const app = createApp({
   ledger,
@@ -31,6 +32,7 @@ const app = createApp({
   compliance: new PgComplianceStore(db),
   referrals,
   awardBatches: new PgAwardBatchStore(db),
+  reconStatus: runs,
   apiSecret: config.apiSecret,
   apiKey: config.apiKey,
   log,
@@ -38,7 +40,6 @@ const app = createApp({
 
 // Defense-in-depth against dropped webhooks: hourly diff of Shopify's own
 // order history against the ledger, for every shop with a stored Admin token.
-const runs = new PgReconRunStore(db);
 startReconciliationLoop({
   runs,
   client: new GraphqlAdminOrdersClient(runs),

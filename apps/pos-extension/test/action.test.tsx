@@ -62,7 +62,11 @@ describe('redeem action modal', () => {
     fireEvent.click(redeemButton());
 
     await waitFor(() => {
-      expect(applyCartDiscount).toHaveBeenCalledWith('FixedAmount', '200 points redeemed', '2.00');
+      expect(applyCartDiscount).toHaveBeenCalledWith(
+        'FixedAmount',
+        'Loyalty points: 200 points redeemed',
+        '2.00',
+      );
     });
     expect(document.body.textContent).toContain('200 points redeemed. 2.00 is off this sale.');
     expect(balanceHeading()).toBe('50 points');
@@ -74,6 +78,45 @@ describe('redeem action modal', () => {
     const body = JSON.parse((redeemCall?.[1] as RequestInit).body as string);
     expect(body).toMatchObject({ channel: 'pos', points: 200 });
     expect(body.attemptId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('a second redemption on the same sale adds to the discount instead of replacing it', async () => {
+    extension.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/balance')) {
+        return new Response(JSON.stringify(balancePayload), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          status: 'applied',
+          balance: 50,
+          discountAmount: '1.50',
+          discountTitle: '150 points redeemed',
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const applyCartDiscount = vi.fn().mockResolvedValue(undefined);
+    extension.shopify.cart.applyCartDiscount = applyCartDiscount;
+    // The sale already carries this app's discount from an earlier redemption
+    // in a modal that has since been closed.
+    extension.shopify.cart.current.value.cartDiscounts = [
+      { type: 'FixedAmount', amount: 2, discountDescription: 'Loyalty points: 200 points redeemed' },
+    ];
+
+    await extension.render();
+    await waitFor(() => expect(balanceHeading()).toBe('250 points'));
+    setPoints('150');
+    await waitFor(() => expect(redeemButton().hasAttribute('disabled')).toBe(false));
+    fireEvent.click(redeemButton());
+
+    await waitFor(() =>
+      expect(applyCartDiscount).toHaveBeenCalledWith(
+        'FixedAmount',
+        'Loyalty points: 350 points redeemed',
+        '3.50',
+      ),
+    );
   });
 
   it('a rejected redemption changes nothing in the cart and explains why', async () => {

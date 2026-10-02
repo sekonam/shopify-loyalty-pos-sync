@@ -161,6 +161,54 @@ export function amountIssue(args: {
   return undefined;
 }
 
+/**
+ * Marks the cart discount this app owns. POS replaces the cart-level discount
+ * rather than adding to it, so a second redemption on the same sale has to
+ * re-apply the RUNNING TOTAL — otherwise the customer is debited twice for
+ * one discount. The marker is what lets a freshly opened modal recognise its
+ * own earlier discount.
+ */
+export const LOYALTY_DISCOUNT_PREFIX = 'Loyalty points';
+
+export interface AppliedLoyaltyDiscount {
+  points: number;
+  amount: number;
+}
+
+/** Finds this app's discount among the cart's discounts, if it already applied one. */
+export function findLoyaltyDiscount(
+  discounts: ReadonlyArray<{ type?: string; amount?: number; discountDescription?: string }>,
+): AppliedLoyaltyDiscount | undefined {
+  for (const discount of discounts) {
+    const description = discount.discountDescription ?? '';
+    if (discount.type !== 'FixedAmount' || !description.startsWith(LOYALTY_DISCOUNT_PREFIX)) {
+      continue;
+    }
+    const points = Number(/(\d+)\s+points/.exec(description)?.[1] ?? 0);
+    const amount = typeof discount.amount === 'number' ? discount.amount : 0;
+    if (points > 0 && amount > 0) return { points, amount };
+  }
+  return undefined;
+}
+
+/**
+ * The discount to apply after redeeming `points` more: this redemption plus
+ * anything this app already put on the sale. Money is summed in whole cents
+ * so repeated redemptions can't drift.
+ */
+export function cumulativeDiscount(
+  prior: AppliedLoyaltyDiscount | undefined,
+  added: { points: number; amount: string },
+): { points: number; amount: string; title: string } {
+  const cents = Math.round((prior?.amount ?? 0) * 100) + Math.round(Number(added.amount) * 100);
+  const points = (prior?.points ?? 0) + added.points;
+  return {
+    points,
+    amount: (cents / 100).toFixed(2),
+    title: `${LOYALTY_DISCOUNT_PREFIX}: ${points} points redeemed`,
+  };
+}
+
 /** Staff-readable text for every redemption outcome the backend can return. */
 export function redeemStatusMessage(
   status: string,

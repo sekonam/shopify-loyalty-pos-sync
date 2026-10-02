@@ -2,13 +2,65 @@ import { describe, expect, it } from 'vitest';
 import {
   amountIssue,
   balanceView,
+  cumulativeDiscount,
   discountValue,
   failedFetch,
+  findLoyaltyDiscount,
   quickPicks,
   redeemStatusMessage,
 } from '../src/state.js';
 
 const at = new Date('2026-10-01T12:00:00Z');
+
+describe('cart discount accumulation', () => {
+  const ours = (description: string, amount: number) => ({
+    type: 'FixedAmount',
+    amount,
+    discountDescription: description,
+  });
+
+  it('recognises only this app\'s own fixed-amount discount', () => {
+    expect(findLoyaltyDiscount([])).toBeUndefined();
+    expect(findLoyaltyDiscount([ours('Loyalty points: 200 points redeemed', 2)])).toEqual({
+      points: 200,
+      amount: 2,
+    });
+    // Someone else's discount, a percentage, or a malformed one: not ours.
+    expect(findLoyaltyDiscount([ours('Manager discount', 5)])).toBeUndefined();
+    expect(
+      findLoyaltyDiscount([
+        { type: 'Percentage', amount: 10, discountDescription: 'Loyalty points: 200 points redeemed' },
+      ]),
+    ).toBeUndefined();
+    expect(findLoyaltyDiscount([ours('Loyalty points: nothing', 2)])).toBeUndefined();
+  });
+
+  it('sums a second redemption onto the first instead of replacing it', () => {
+    const first = cumulativeDiscount(undefined, { points: 200, amount: '2.00' });
+    expect(first).toEqual({
+      points: 200,
+      amount: '2.00',
+      title: 'Loyalty points: 200 points redeemed',
+    });
+    const second = cumulativeDiscount({ points: 200, amount: 2 }, { points: 150, amount: '1.50' });
+    expect(second).toEqual({
+      points: 350,
+      amount: '3.50',
+      title: 'Loyalty points: 350 points redeemed',
+    });
+  });
+
+  it('adds money in whole cents so repeated redemptions cannot drift', () => {
+    let running = cumulativeDiscount(undefined, { points: 10, amount: '0.10' });
+    for (let i = 0; i < 2; i++) {
+      running = cumulativeDiscount(
+        { points: running.points, amount: Number(running.amount) },
+        { points: 10, amount: '0.20' },
+      );
+    }
+    expect(running.amount).toBe('0.50'); // float addition would give 0.5000000000000001
+  });
+});
 
 describe('balanceView — the disable-when-offline rule', () => {
   it('loading: nothing fetched yet, redeem disabled', () => {

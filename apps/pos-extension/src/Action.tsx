@@ -5,8 +5,10 @@ import { customerGid, fetchBalance, redeemPoints, type BalanceResponse } from '.
 import {
   amountIssue,
   balanceView,
+  cumulativeDiscount,
   discountValue,
   failedFetch,
+  findLoyaltyDiscount,
   formatAmount,
   quickPicks,
   redeemStatusMessage,
@@ -113,7 +115,12 @@ function Action() {
       // Definitive outcome either way: the next redemption is a new attempt.
       attemptIdRef.current = undefined;
       if (result.status === 'applied' && 'discountAmount' in result) {
-        await shopify.cart.applyCartDiscount('FixedAmount', result.discountTitle, result.discountAmount);
+        // Applying replaces the cart-level discount, so re-apply the running
+        // total — a second redemption on the same sale must add to the
+        // discount, not overwrite it and charge the points twice.
+        const prior = findLoyaltyDiscount(shopify.cart.current.value.cartDiscounts ?? []);
+        const total = cumulativeDiscount(prior, { points, amount: result.discountAmount });
+        await shopify.cart.applyCartDiscount('FixedAmount', total.title, total.amount);
         setLastFetch({ ok: true, balance: result.balance, at: new Date() });
         setPhase({
           name: 'done',

@@ -4,6 +4,7 @@ import { InMemoryLedgerStore } from '@loyalty/ledger';
 import { InMemoryReceiptStore } from '../src/receipts.js';
 import { InMemorySettingsStore } from '../src/settings.js';
 import { InMemoryComplianceStore } from '../src/compliance.js';
+import { InMemoryReferralStore } from '../src/referrals.js';
 import { createApp, type AppDeps } from '../src/routes.js';
 
 export const API_SECRET = 'test-secret';
@@ -15,12 +16,14 @@ export function makeDeps(): AppDeps & {
   settings: InMemorySettingsStore;
   receipts: InMemoryReceiptStore;
   compliance: InMemoryComplianceStore;
+  referrals: InMemoryReferralStore;
 } {
   return {
     ledger: new InMemoryLedgerStore(),
     settings: new InMemorySettingsStore(),
     receipts: new InMemoryReceiptStore(),
     compliance: new InMemoryComplianceStore(),
+    referrals: new InMemoryReferralStore(),
     apiSecret: API_SECRET,
     apiKey: API_KEY,
   };

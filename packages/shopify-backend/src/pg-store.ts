@@ -155,6 +155,18 @@ export class PgLedgerStore implements LedgerStore {
     return rows[0] ? rowToEntry(rows[0]) : undefined;
   }
 
+  async earnedSince(shopDomain: string, customerId: string, since: Date): Promise<number> {
+    const { rows } = await this.db.query(
+      `select coalesce(sum(delta), 0)::int as earned
+         from points_ledger_entry
+        where shop_domain = $1 and customer_id = $2
+          and delta > 0 and reason in ('earn', 'reconciliation')
+          and created_at >= $3`,
+      [shopDomain, customerId, since],
+    );
+    return rows[0].earned as number;
+  }
+
   async entriesForShop(shopDomain: string, limit = 10_000): Promise<PointsLedgerEntry[]> {
     const { rows } = await this.db.query(
       `select * from points_ledger_entry

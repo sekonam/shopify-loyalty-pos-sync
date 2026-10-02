@@ -106,6 +106,7 @@ describe('GET /api/balance', () => {
       minRedemption: 100,
       redemptionRate: '100',
       currency: 'USD',
+      tier: null,
       maxDiscountAmount: '2.50',
     });
   });
@@ -366,7 +367,11 @@ describe('settings and export', () => {
         headers: { 'content-type': 'application/json' },
       }),
     );
-    expect(await put.json()).toEqual({ earnRate: '2', redemptionRate: '100', minRedemption: 50 });
+    expect(await put.json()).toMatchObject({
+      earnRate: '2',
+      redemptionRate: '100',
+      minRedemption: 50,
+    });
     const bad = await app.request(
       await authed('/settings', {
         method: 'PUT',

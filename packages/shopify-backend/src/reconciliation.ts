@@ -1,10 +1,12 @@
 import {
   earnEntryFromOrder,
+  effectiveEarnRate,
   orderPaidKey,
   refundKey,
   refundReversalEntry,
   type LedgerStore,
 } from '@loyalty/ledger';
+import { TIER_WINDOW_MS } from './webhooks.js';
 import type { SettingsStore } from './settings.js';
 
 /**
@@ -87,17 +89,36 @@ export async function reconcileShop(
 
       const paid = PAID_STATUSES.has(order.financialStatus ?? '');
       if (paid && !(await deps.ledger.hasEntry(shopDomain, orderPaidKey(order.id)))) {
-        const draft = earnEntryFromOrder({
+        // Same earn policy as the webhook path. Note the tier window is
+        // evaluated at correction time, not original order time — a
+        // deliberate simplification; the divergence is at most one tier
+        // step on orders healed long after the fact.
+        const earned365 = await deps.ledger.earnedSince(
           shopDomain,
-          customerId: order.customerId,
-          orderId: order.id,
+          order.customerId,
+          new Date(Date.now() - TIER_WINDOW_MS),
+        );
+        const policy = effectiveEarnRate({
+          baseEarnRate: settings.earnRate,
           orderSourceName: order.sourceName,
-          totalPrice: order.totalPrice,
-          earnRate: settings.earnRate,
+          channelRules: settings.channelRules,
+          excludedSources: settings.excludedSources,
+          tiers: settings.tiers,
+          earned365,
         });
-        if (draft) {
-          const { inserted } = await deps.ledger.append({ ...draft, reason: 'reconciliation' });
-          if (inserted) earnsAdded += 1;
+        if (policy.kind === 'earn') {
+          const draft = earnEntryFromOrder({
+            shopDomain,
+            customerId: order.customerId,
+            orderId: order.id,
+            orderSourceName: order.sourceName,
+            totalPrice: order.totalPrice,
+            earnRate: policy.rate,
+          });
+          if (draft) {
+            const { inserted } = await deps.ledger.append({ ...draft, reason: 'reconciliation' });
+            if (inserted) earnsAdded += 1;
+          }
         }
       }
 

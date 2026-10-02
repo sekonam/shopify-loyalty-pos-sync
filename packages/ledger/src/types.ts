@@ -104,8 +104,8 @@ export interface ShopSettings {
 
 export const DEFAULT_SETTINGS: Pick<
   ShopSettings,
-  'earnRate' | 'redemptionRate' | 'minRedemption' | 'referral'
-> = {
+  'earnRate' | 'redemptionRate' | 'minRedemption'
+> & { referral: ReferralConfig } = {
   earnRate: '1',
   redemptionRate: '100',
   minRedemption: 100,

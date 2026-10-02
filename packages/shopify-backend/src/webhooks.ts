@@ -1,13 +1,18 @@
 import {
   earnEntryFromOrder,
+  effectiveEarnRate,
   floorProduct,
   refundReversalEntry,
   sumAmounts,
   type LedgerStore,
   type PointsLedgerEntry,
+  type ShopSettings,
 } from '@loyalty/ledger';
 import { hashPayload, type ReceiptStore } from './receipts.js';
+import type { ReferralStore } from './referrals.js';
 import type { SettingsStore } from './settings.js';
+
+export const TIER_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
 
 export interface ComplianceStore {
   /** customers/redact: strip the customer's identity, keep aggregate ledger rows valid. */
@@ -19,6 +24,7 @@ export interface WebhookDeps {
   settings: SettingsStore;
   receipts: ReceiptStore;
   compliance: ComplianceStore;
+  referrals: ReferralStore;
   log?: (msg: string, extra?: Record<string, unknown>) => void;
 }
 
@@ -146,19 +152,56 @@ async function handleOrdersPaid(
   if (!customerId) return { handled: true, action: 'skipped order without customer' };
 
   const oid = order.admin_graphql_api_id ?? orderGid(order.id);
-  const draft = earnEntryFromOrder({
+
+  // Referral eligibility is judged BEFORE this order's earn lands: the
+  // reward fires only on the friend's first earning order.
+  const isFirstEarn =
+    (await deps.ledger.earnedSince(shopDomain, customerId, new Date(0))) === 0;
+
+  // v1.x/v2 earn policy: excluded source → channel rule → tier multiplier.
+  const earned365 = await deps.ledger.earnedSince(
     shopDomain,
     customerId,
-    orderId: oid,
+    new Date(Date.now() - TIER_WINDOW_MS),
+  );
+  const policy = effectiveEarnRate({
+    baseEarnRate: settings.earnRate,
     orderSourceName: order.source_name,
-    totalPrice: order.total_price,
-    earnRate: settings.earnRate,
+    channelRules: settings.channelRules,
+    excludedSources: settings.excludedSources,
+    tiers: settings.tiers,
+    earned365,
   });
-  const earnAction = draft
-    ? (await deps.ledger.append(draft)).inserted
-      ? `earned ${draft.delta}`
-      : 'earn already recorded'
-    : 'order earned zero points';
+
+  let earnAction: string;
+  if (policy.kind === 'skip') {
+    earnAction = `no earn: ${policy.why}`;
+  } else {
+    const draft = earnEntryFromOrder({
+      shopDomain,
+      customerId,
+      orderId: oid,
+      orderSourceName: order.source_name,
+      totalPrice: order.total_price,
+      earnRate: policy.rate,
+    });
+    earnAction = draft
+      ? (await deps.ledger.append(draft)).inserted
+        ? `earned ${draft.delta}${policy.tier ? ` (${policy.tier.name})` : ''}`
+        : 'earn already recorded'
+      : 'order earned zero points';
+  }
+
+  const referralAction = await processReferral(
+    shopDomain,
+    oid,
+    customerId,
+    isFirstEarn,
+    order,
+    settings,
+    deps,
+  );
+  if (referralAction) earnAction = `${earnAction}; ${referralAction}`;
 
   // After the earn, so the clawback has the order's own points to claw from.
   const clawback = await enforceLoyaltyAttempt(
@@ -171,6 +214,75 @@ async function handleOrdersPaid(
     settings.redemptionRate,
   );
   return { handled: true, action: clawback ? `${earnAction}; ${clawback}` : earnAction };
+}
+
+/**
+ * Referral rewards, triggered by the friend's first earning order carrying a
+ * loyalty_referral attribute. One reward per referred customer ever (the
+ * store's primary key enforces it — designed against BON's class of
+ * repeatable-referral bugs); self-referral and unknown codes are ignored
+ * with a log line. Both ledger writes are idempotent per order, so a
+ * redelivered webhook can't double-reward.
+ */
+async function processReferral(
+  shopDomain: string,
+  orderId: string,
+  customerId: string,
+  isFirstEarn: boolean,
+  order: OrdersPaidPayload,
+  settings: ShopSettings,
+  deps: WebhookDeps,
+): Promise<string | undefined> {
+  const referral = settings.referral;
+  const code = (order.note_attributes ?? [])
+    .find((a) => a.name === 'loyalty_referral')
+    ?.value?.trim();
+  if (!code) return undefined;
+  const log = deps.log ?? (() => undefined);
+  if (!referral?.enabled) return 'referral code ignored (program disabled)';
+  if (!isFirstEarn) return 'referral code ignored (not first order)';
+  const advocate = await deps.referrals.advocateFor(shopDomain, code);
+  if (!advocate) {
+    log('unknown referral code', { shopDomain, orderId, code });
+    return 'referral code unknown';
+  }
+  if (advocate === customerId) {
+    log('self-referral ignored', { shopDomain, orderId });
+    return 'self-referral ignored';
+  }
+  const recorded = await deps.referrals.recordIfFirst(shopDomain, {
+    advocateCustomerId: advocate,
+    friendCustomerId: customerId,
+    code,
+    orderId,
+  });
+  if (!recorded) return 'referral already rewarded for this customer';
+  const parts: string[] = [];
+  if (referral.advocatePoints > 0) {
+    await deps.ledger.append({
+      shopDomain,
+      customerId: advocate,
+      orderId,
+      sourceName: 'system',
+      delta: referral.advocatePoints,
+      reason: 'referral_reward',
+      idempotencyKey: `referral_advocate:${orderId}`,
+    });
+    parts.push(`advocate +${referral.advocatePoints}`);
+  }
+  if (referral.friendPoints > 0) {
+    await deps.ledger.append({
+      shopDomain,
+      customerId,
+      orderId,
+      sourceName: 'system',
+      delta: referral.friendPoints,
+      reason: 'referral_reward',
+      idempotencyKey: `referral_friend:${orderId}`,
+    });
+    parts.push(`friend +${referral.friendPoints}`);
+  }
+  return `referral rewarded (${parts.join(', ')})`;
 }
 
 /**

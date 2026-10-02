@@ -1,15 +1,18 @@
+import { randomUUID } from 'node:crypto';
 import {
   redemptionDiscountAmount,
+  selectTier,
   type LedgerStore,
   type RedemptionChannel,
+  type VipTier,
 } from '@loyalty/ledger';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { adminPageHtml } from './admin-page.js';
 import { verifyWebhookHmac } from './hmac.js';
 import { verifySessionToken } from './session-token.js';
-import { processWebhook, type WebhookDeps } from './webhooks.js';
-import type { SettingsStore } from './settings.js';
+import { processWebhook, TIER_WINDOW_MS, type WebhookDeps } from './webhooks.js';
+import type { SettingsPatch, SettingsStore } from './settings.js';
 
 export interface AppDeps extends WebhookDeps {
   ledger: LedgerStore;
@@ -133,6 +136,16 @@ export function createApp(deps: AppDeps): Hono<Env> {
       deps.ledger.balance(shopDomain, customerId),
       deps.settings.get(shopDomain),
     ]);
+    let tier: { name: string; multiplier: string; earned365: number } | null = null;
+    if (settings.tiers?.length) {
+      const earned365 = await deps.ledger.earnedSince(
+        shopDomain,
+        customerId,
+        new Date(Date.now() - TIER_WINDOW_MS),
+      );
+      const t = selectTier(settings.tiers, earned365);
+      tier = t ? { name: t.name, multiplier: t.multiplier, earned365 } : { name: '', multiplier: '1', earned365 };
+    }
     return c.json({
       customerId,
       balance,
@@ -141,10 +154,28 @@ export function createApp(deps: AppDeps): Hono<Env> {
       // Redemptions are priced in the shop currency; checkout must not offer
       // redemption in a different presentment currency (v1 single-currency).
       currency: settings.currency ?? null,
+      tier,
       maxDiscountAmount: redemptionDiscountAmount(
         Math.max(balance, 0),
         settings.redemptionRate,
       ),
+    });
+  });
+
+  // Advocate's shareable referral code — customer sessions only (the code
+  // belongs to the signed-in customer; staff have no advocate identity here).
+  api.get('/referral-code', async (c) => {
+    const sub = c.get('tokenSub');
+    if (tokenKind(sub) !== 'customer') {
+      return c.json({ error: 'a signed-in customer session is required' }, 403);
+    }
+    const settings = await deps.settings.get(c.get('shopDomain'));
+    if (!settings.referral?.enabled) return c.json({ error: 'referral program disabled' }, 404);
+    const code = await deps.referrals.codeFor(c.get('shopDomain'), sub as string);
+    return c.json({
+      code,
+      advocatePoints: settings.referral.advocatePoints,
+      friendPoints: settings.referral.friendPoints,
     });
   });
 
@@ -257,48 +288,178 @@ export function createApp(deps: AppDeps): Hono<Env> {
     });
   });
 
-  merchant.get('/settings', async (c) => {
-    const settings = await deps.settings.get(c.get('shopDomain'));
-    return c.json({
-      earnRate: settings.earnRate,
-      redemptionRate: settings.redemptionRate,
-      minRedemption: settings.minRedemption,
-    });
-  });
-
-  merchant.put('/settings', async (c) => {
-    let body: { earnRate?: string; redemptionRate?: string; minRedemption?: number };
+  /**
+   * Giveaway/contest/goodwill point awards (v2): positive deltas append,
+   * negative ones go through appendCapped so a deduction can never push a
+   * balance below zero. batchId + row index form the idempotency key, so a
+   * retried request can't double-award.
+   */
+  merchant.post('/awards', async (c) => {
+    let body: {
+      batchId?: string;
+      awards?: Array<{ customerId?: string; points?: number }>;
+    };
     try {
       body = await c.req.json();
     } catch {
       return c.json({ error: 'invalid JSON body' }, 400);
     }
-    const patch: Parameters<SettingsStore['upsert']>[1] = {};
-    if (body.earnRate !== undefined) {
-      if (!isPositiveDecimal(body.earnRate)) return c.json({ error: 'earnRate must be a positive decimal string' }, 400);
-      patch.earnRate = body.earnRate;
+    const batchId = body.batchId ?? randomUUID();
+    const awards = body.awards ?? [];
+    if (
+      awards.length === 0 ||
+      awards.length > 500 ||
+      !awards.every(
+        (a) =>
+          typeof a.customerId === 'string' &&
+          a.customerId !== '' &&
+          Number.isInteger(a.points) &&
+          a.points !== 0,
+      )
+    ) {
+      return c.json(
+        { error: '1-500 awards of {customerId, nonzero integer points} required' },
+        400,
+      );
     }
-    if (body.redemptionRate !== undefined) {
-      if (!isPositiveDecimal(body.redemptionRate)) return c.json({ error: 'redemptionRate must be a positive decimal string' }, 400);
-      patch.redemptionRate = body.redemptionRate;
-    }
-    if (body.minRedemption !== undefined) {
-      if (!Number.isInteger(body.minRedemption) || body.minRedemption <= 0) {
-        return c.json({ error: 'minRedemption must be a positive integer' }, 400);
+    const shopDomain = c.get('shopDomain');
+    const results: Array<{ customerId: string; applied: number }> = [];
+    for (const [i, award] of awards.entries()) {
+      const draft = {
+        shopDomain,
+        customerId: award.customerId as string,
+        sourceName: 'system' as const,
+        delta: award.points as number,
+        reason: 'adjustment' as const,
+        idempotencyKey: `award:${batchId}:${i}`,
+      };
+      if ((award.points as number) > 0) {
+        const { entry, inserted } = await deps.ledger.append(draft);
+        results.push({ customerId: draft.customerId, applied: inserted ? entry.delta : 0 });
+      } else {
+        const result = await deps.ledger.appendCapped(draft);
+        results.push({
+          customerId: draft.customerId,
+          applied: result?.inserted ? result.entry.delta : 0,
+        });
       }
-      patch.minRedemption = body.minRedemption;
     }
-    const settings = await deps.settings.upsert(c.get('shopDomain'), patch);
-    return c.json({
-      earnRate: settings.earnRate,
-      redemptionRate: settings.redemptionRate,
-      minRedemption: settings.minRedemption,
-    });
+    return c.json({ batchId, results });
+  });
+
+  merchant.get('/settings', async (c) => {
+    const settings = await deps.settings.get(c.get('shopDomain'));
+    return c.json(settingsView(settings));
+  });
+
+  merchant.put('/settings', async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    const parsed = parseSettingsPatch(body);
+    if ('error' in parsed) return c.json({ error: parsed.error }, 400);
+    const settings = await deps.settings.upsert(c.get('shopDomain'), parsed.patch);
+    return c.json(settingsView(settings));
   });
 
   api.route('/', merchant);
   app.route('/api', api);
   return app;
+}
+
+function settingsView(settings: Awaited<ReturnType<SettingsStore['get']>>) {
+  return {
+    earnRate: settings.earnRate,
+    redemptionRate: settings.redemptionRate,
+    minRedemption: settings.minRedemption,
+    channelRules: settings.channelRules ?? {},
+    excludedSources: settings.excludedSources ?? [],
+    tiers: settings.tiers ?? [],
+    referral: settings.referral,
+  };
+}
+
+const RULE_CHANNELS = ['web', 'pos', 'mobile_app', 'other'] as const;
+
+function parseSettingsPatch(body: Record<string, unknown>): { patch: SettingsPatch } | { error: string } {
+  const patch: SettingsPatch = {};
+  if (body['earnRate'] !== undefined) {
+    if (!isPositiveDecimal(body['earnRate'] as string)) return { error: 'earnRate must be a positive decimal string' };
+    patch.earnRate = body['earnRate'] as string;
+  }
+  if (body['redemptionRate'] !== undefined) {
+    if (!isPositiveDecimal(body['redemptionRate'] as string)) return { error: 'redemptionRate must be a positive decimal string' };
+    patch.redemptionRate = body['redemptionRate'] as string;
+  }
+  if (body['minRedemption'] !== undefined) {
+    if (!Number.isInteger(body['minRedemption']) || (body['minRedemption'] as number) <= 0) {
+      return { error: 'minRedemption must be a positive integer' };
+    }
+    patch.minRedemption = body['minRedemption'] as number;
+  }
+  if (body['channelRules'] !== undefined) {
+    const rules = body['channelRules'];
+    if (typeof rules !== 'object' || rules === null || Array.isArray(rules)) {
+      return { error: 'channelRules must be an object keyed by channel' };
+    }
+    for (const [channel, rule] of Object.entries(rules as Record<string, unknown>)) {
+      if (!RULE_CHANNELS.includes(channel as (typeof RULE_CHANNELS)[number])) {
+        return { error: `unknown channel '${channel}' (use ${RULE_CHANNELS.join('/')})` };
+      }
+      const r = rule as { enabled?: unknown; earnRate?: unknown };
+      if (typeof r?.enabled !== 'boolean') return { error: `channelRules.${channel}.enabled must be boolean` };
+      if (r.earnRate !== undefined && !isPositiveDecimal(r.earnRate as string)) {
+        return { error: `channelRules.${channel}.earnRate must be a positive decimal string` };
+      }
+    }
+    patch.channelRules = rules as NonNullable<SettingsPatch['channelRules']>;
+  }
+  if (body['excludedSources'] !== undefined) {
+    const list = body['excludedSources'];
+    if (!Array.isArray(list) || !list.every((s) => typeof s === 'string' && s.trim() !== '')) {
+      return { error: 'excludedSources must be an array of non-empty strings' };
+    }
+    patch.excludedSources = (list as string[]).map((s) => s.trim());
+  }
+  if (body['tiers'] !== undefined) {
+    const tiers = body['tiers'];
+    if (
+      !Array.isArray(tiers) ||
+      tiers.length > 20 ||
+      !tiers.every(
+        (t: { name?: unknown; minEarned365?: unknown; multiplier?: unknown }) =>
+          typeof t?.name === 'string' &&
+          t.name.trim() !== '' &&
+          Number.isInteger(t.minEarned365) &&
+          (t.minEarned365 as number) >= 0 &&
+          isPositiveDecimal(t.multiplier as string),
+      )
+    ) {
+      return { error: 'tiers must be [{name, minEarned365 >= 0, positive decimal multiplier}] (max 20)' };
+    }
+    patch.tiers = tiers as VipTier[];
+  }
+  if (body['referral'] !== undefined) {
+    const r = body['referral'] as { enabled?: unknown; advocatePoints?: unknown; friendPoints?: unknown };
+    if (
+      typeof r?.enabled !== 'boolean' ||
+      !Number.isInteger(r.advocatePoints) ||
+      (r.advocatePoints as number) < 0 ||
+      !Number.isInteger(r.friendPoints) ||
+      (r.friendPoints as number) < 0
+    ) {
+      return { error: 'referral must be {enabled, advocatePoints >= 0, friendPoints >= 0}' };
+    }
+    patch.referral = {
+      enabled: r.enabled,
+      advocatePoints: r.advocatePoints as number,
+      friendPoints: r.friendPoints as number,
+    };
+  }
+  return { patch };
 }
 
 function csvCell(value: string | number): string {

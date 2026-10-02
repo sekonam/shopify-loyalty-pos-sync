@@ -7,6 +7,7 @@ import { PgLedgerStore } from './pg-store.js';
 import { PgReceiptStore } from './receipts.js';
 import { PgSettingsStore } from './settings.js';
 import { PgComplianceStore } from './compliance.js';
+import { PgReferralStore } from './referrals.js';
 import { createApp } from './routes.js';
 import { GraphqlAdminOrdersClient } from './admin-client.js';
 import { PgReconRunStore, startReconciliationLoop } from './scheduler.js';
@@ -26,6 +27,7 @@ const app = createApp({
   settings,
   receipts: new PgReceiptStore(db),
   compliance: new PgComplianceStore(db),
+  referrals: new PgReferralStore(db),
   apiSecret: config.apiSecret,
   apiKey: config.apiKey,
   log,

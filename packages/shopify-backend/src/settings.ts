@@ -2,8 +2,28 @@ import { DEFAULT_SETTINGS, type ShopSettings } from '@loyalty/ledger';
 import type { Db } from './db.js';
 
 export type SettingsPatch = Partial<
-  Pick<ShopSettings, 'earnRate' | 'redemptionRate' | 'minRedemption' | 'currency'>
+  Pick<
+    ShopSettings,
+    | 'earnRate'
+    | 'redemptionRate'
+    | 'minRedemption'
+    | 'currency'
+    | 'channelRules'
+    | 'excludedSources'
+    | 'tiers'
+    | 'referral'
+  >
 >;
+
+/** The part of the patch stored in the config jsonb document. */
+const configOf = (patch: SettingsPatch): Record<string, unknown> => {
+  const config: Record<string, unknown> = {};
+  if (patch.channelRules !== undefined) config['channelRules'] = patch.channelRules;
+  if (patch.excludedSources !== undefined) config['excludedSources'] = patch.excludedSources;
+  if (patch.tiers !== undefined) config['tiers'] = patch.tiers;
+  if (patch.referral !== undefined) config['referral'] = patch.referral;
+  return config;
+};
 
 export interface SettingsStore {
   /** Returns stored settings, or defaults for a shop with no row yet. */
@@ -60,17 +80,19 @@ export class PgSettingsStore implements SettingsStore {
     // Note: an upsert never clears uninstalled_at — resurrecting a tenant is
     // an explicit (re)install-flow concern, not a side effect of a write.
     const { rows } = await this.db.query(
-      `insert into shop_settings (shop_domain, earn_rate, redemption_rate, min_redemption, currency)
+      `insert into shop_settings (shop_domain, earn_rate, redemption_rate, min_redemption, currency, config)
        values ($1,
                coalesce($2::numeric, 1),
                coalesce($3::numeric, 100),
                coalesce($4::int, 100),
-               $5::text)
+               $5::text,
+               coalesce($6::jsonb, '{}'))
        on conflict (shop_domain) do update set
          earn_rate       = coalesce($2::numeric, shop_settings.earn_rate),
          redemption_rate = coalesce($3::numeric, shop_settings.redemption_rate),
          min_redemption  = coalesce($4::int, shop_settings.min_redemption),
-         currency        = coalesce($5::text, shop_settings.currency)
+         currency        = coalesce($5::text, shop_settings.currency),
+         config          = shop_settings.config || coalesce($6::jsonb, '{}')
        returning *`,
       [
         shopDomain,
@@ -78,6 +100,7 @@ export class PgSettingsStore implements SettingsStore {
         patch.redemptionRate ?? null,
         patch.minRedemption ?? null,
         patch.currency ?? null,
+        JSON.stringify(configOf(patch)),
       ],
     );
     return rowToSettings(rows[0]);
@@ -101,17 +124,26 @@ export class PgSettingsStore implements SettingsStore {
     await this.db.query('delete from webhook_receipt where shop_domain = $1', [shopDomain]);
     await this.db.query('delete from reconciliation_run where shop_domain = $1', [shopDomain]);
     await this.db.query('delete from shop_token where shop_domain = $1', [shopDomain]);
+    await this.db.query('delete from referral where shop_domain = $1', [shopDomain]);
+    await this.db.query('delete from referral_code where shop_domain = $1', [shopDomain]);
     await this.db.query('delete from shop_settings where shop_domain = $1', [shopDomain]);
   }
 }
 
 function rowToSettings(row: Record<string, unknown>): ShopSettings {
+  const config = (row['config'] ?? {}) as Partial<
+    Pick<ShopSettings, 'channelRules' | 'excludedSources' | 'tiers' | 'referral'>
+  >;
   return {
     shopDomain: row['shop_domain'] as string,
     earnRate: String(row['earn_rate']),
     redemptionRate: String(row['redemption_rate']),
     minRedemption: Number(row['min_redemption']),
     ...(row['currency'] != null ? { currency: row['currency'] as string } : {}),
+    ...(config.channelRules !== undefined ? { channelRules: config.channelRules } : {}),
+    ...(config.excludedSources !== undefined ? { excludedSources: config.excludedSources } : {}),
+    ...(config.tiers !== undefined ? { tiers: config.tiers } : {}),
+    referral: config.referral ?? DEFAULT_SETTINGS.referral,
     installedAt: new Date(row['installed_at'] as string),
     ...(row['uninstalled_at'] != null
       ? { uninstalledAt: new Date(row['uninstalled_at'] as string) }

@@ -55,6 +55,25 @@ with the real `client_id` in `shopify.app.toml`), building the Function wasm + d
 extensions (`shopify app deploy`), the managed-install token exchange, and the dev-store spikes
 in `docs/PRODUCT-SPEC.md` (webhook latency, real-POS offline behavior, incumbent POS testing).
 
+## The merchant admin
+
+`/admin` is the embedded app page, in three tabs:
+
+- **Overview** — members, points outstanding and what they're worth, 30-day issued/redeemed,
+  and the reconciliation banner: when the ledger was last checked against Shopify's own order
+  history and whether anything had to be repaired. That banner is the merchant-visible form of
+  the product's central claim, so it is deliberately the first thing on the page.
+- **Program** — base earn/redemption rates with live worked examples, per-channel earning rules
+  and excluded sources, VIP tiers, and the referral program. Each card saves its own slice.
+- **Ledger** — the award tool, and a filterable table of every entry with its reason, channel,
+  and a link to the customer in Shopify admin. CSV export included.
+
+Styling is hand-written CSS using the real Polaris token values (`src/ui/theme.ts`) rather than
+Polaris web components, because those supply no page chrome and render differently with and
+without App Bridge — one stylesheet keeps the page identical inside the admin and standalone.
+Shopify admin has no dark mode, so the admin page is light-only by design; the dev console,
+which never renders inside the admin, opts into a dark palette.
+
 ## Repo layout
 
 ```
@@ -62,7 +81,8 @@ packages/ledger           the append-only points ledger — no platform dependen
                           InMemoryLedgerStore is the executable spec for the SQL store
 packages/shopify-backend  the authoritative service: webhook ingestion (orders/paid,
                           refunds/create, GDPR trio), atomic redemption API, reconciliation
-                          job + scheduler, embedded admin page
+                          job + scheduler, embedded admin (src/admin-page.ts) on the
+                          Polaris-aligned design system in src/ui/theme.ts
 apps/checkout-extension   discount Function (unified Discount API) + checkout UI block
 apps/pos-extension        POS UI extension (customer-details block + redeem action),
                           disable-when-offline

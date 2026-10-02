@@ -258,6 +258,19 @@ const LEDGER_WINDOW = 500;
 
 const $ = (id) => document.getElementById(id);
 const nf = new Intl.NumberFormat();
+/** Merchants read prices, not decimals — format in the shop's own currency. */
+function money(amount, currency) {
+  const value = Number(amount);
+  if (!Number.isFinite(value)) return String(amount);
+  if (currency) {
+    try {
+      return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(value);
+    } catch (err) {
+      // Unknown currency code — fall through to the plain amount.
+    }
+  }
+  return value.toFixed(2);
+}
 let state = {
   entries: [], shown: PAGE_SIZE, shopDomain: null, currency: null, settings: null, totalEntries: 0,
 };
@@ -343,12 +356,11 @@ function relativeTime(iso) {
 function renderOverview(o) {
   state.shopDomain = o.shopDomain;
   state.currency = o.currency;
-  const money = o.currency ? o.outstandingValue + ' ' + o.currency : o.outstandingValue;
   const stats = $('stats');
   stats.textContent = '';
   stats.append(
     statTile('Members with points', nf.format(o.stats.members), nf.format(o.stats.entryCount) + ' ledger entries'),
-    statTile('Points outstanding', nf.format(o.stats.outstandingPoints), 'Worth ' + money),
+    statTile('Points outstanding', nf.format(o.stats.outstandingPoints), 'Worth ' + money(o.outstandingValue, o.currency)),
     statTile('Points issued', nf.format(o.stats.issuedInWindow), 'Last ' + o.windowDays + ' days'),
     statTile('Points redeemed', nf.format(o.stats.redeemedInWindow), 'Last ' + o.windowDays + ' days'),
   );

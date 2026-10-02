@@ -38,6 +38,9 @@ describe('GET /admin', () => {
       expect(html).toContain(panel);
     }
     expect(html).toContain('role="tablist"');
+    // Layout classes carry display:flex, which beats the UA's [hidden] rule —
+    // without this, every tab panel renders at once.
+    expect(html).toContain('[hidden] { display: none !important; }');
     // Shopify admin has no dark mode: a dark app frame inside the light admin
     // chrome would look broken, so the admin ships light-only on purpose.
     expect(html).not.toContain('prefers-color-scheme: dark');

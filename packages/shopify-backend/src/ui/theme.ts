@@ -96,6 +96,13 @@ ${options.dark ? darkTokens() : ''}
 
 *, *::before, *::after { box-sizing: border-box; }
 
+/*
+ * The UA's [hidden] rule is only "display: none" at the lowest specificity, so
+ * any layout class (.stack, .row, .grid) silently defeats it — which showed up
+ * as every tab panel rendering at once. Make hiding win.
+ */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);

@@ -1,6 +1,6 @@
-import { floorProduct, parseDecimal } from './money.js';
+import { floorProduct, mulDecimals, parseDecimal } from './money.js';
 import { orderPaidKey, refundKey } from './idempotency.js';
-import type { LedgerEntryDraft, SourceName } from './types.js';
+import type { ChannelRule, LedgerEntryDraft, RuleChannel, SourceName, VipTier } from './types.js';
 
 /**
  * Maps Shopify's Order.sourceName / order.source_name to the ledger's channel tag.
@@ -24,6 +24,55 @@ export function normalizeSourceName(raw: string | null | undefined): {
     default:
       return { sourceName: 'other', rawSourceName: raw ?? '' };
   }
+}
+
+/** The tier a customer qualifies for: highest minEarned365 at or below earned365. */
+export function selectTier(tiers: VipTier[] | undefined, earned365: number): VipTier | undefined {
+  let best: VipTier | undefined;
+  for (const tier of tiers ?? []) {
+    if (earned365 >= tier.minEarned365 && (!best || tier.minEarned365 > best.minEarned365)) {
+      best = tier;
+    }
+  }
+  return best;
+}
+
+export interface EarnPolicyInput {
+  baseEarnRate: string;
+  /** The order's raw source_name, before normalization. */
+  orderSourceName: string | null | undefined;
+  channelRules?: Partial<Record<RuleChannel, ChannelRule>> | undefined;
+  excludedSources?: string[] | undefined;
+  tiers?: VipTier[] | undefined;
+  /** Points earned (purchase earns only) in the trailing 365 days. */
+  earned365: number;
+}
+
+export type EarnPolicyResult =
+  | { kind: 'earn'; rate: string; tier?: VipTier }
+  | { kind: 'skip'; why: string };
+
+/**
+ * Resolves the effective earn rate for one order, in order of precedence:
+ * excluded source (v1.x channel-filter ask) → channel rule disabled →
+ * channel rate override → VIP-tier multiplier. Pure; both the webhook path
+ * and the reconciliation job go through this one function.
+ */
+export function effectiveEarnRate(input: EarnPolicyInput): EarnPolicyResult {
+  const raw = (input.orderSourceName ?? '').toLowerCase();
+  if ((input.excludedSources ?? []).some((s) => s.toLowerCase() === raw && raw !== '')) {
+    return { kind: 'skip', why: `source '${input.orderSourceName}' is excluded from earning` };
+  }
+  const { sourceName } = normalizeSourceName(input.orderSourceName);
+  const channel: RuleChannel = sourceName === 'system' ? 'other' : sourceName;
+  const rule = input.channelRules?.[channel];
+  if (rule?.enabled === false) {
+    return { kind: 'skip', why: `earning disabled for channel '${channel}'` };
+  }
+  let rate = rule?.earnRate ?? input.baseEarnRate;
+  const tier = selectTier(input.tiers, input.earned365);
+  if (tier) rate = mulDecimals(rate, tier.multiplier);
+  return tier ? { kind: 'earn', rate, tier } : { kind: 'earn', rate };
 }
 
 export interface EarnInput {

@@ -65,6 +65,12 @@ export interface LedgerStore {
   ): Promise<PointsLedgerEntry | undefined>;
   /** All entries for a shop, oldest first (admin ledger view / CSV export). */
   entriesForShop(shopDomain: string, limit?: number): Promise<PointsLedgerEntry[]>;
+  /**
+   * Purchase points earned since `since` (positive deltas with reason
+   * 'earn'/'reconciliation') — the VIP-tier qualification basis. Spending
+   * points never demotes; referral/adjustment credits don't count.
+   */
+  earnedSince(shopDomain: string, customerId: string, since: Date): Promise<number>;
 }
 
 /**
@@ -181,6 +187,18 @@ export class InMemoryLedgerStore implements LedgerStore {
 
   async entriesForShop(shopDomain: string, limit = 10_000): Promise<PointsLedgerEntry[]> {
     return (this.entriesByShop.get(shopDomain) ?? []).slice(0, limit);
+  }
+
+  async earnedSince(shopDomain: string, customerId: string, since: Date): Promise<number> {
+    return (this.entriesByShop.get(shopDomain) ?? [])
+      .filter(
+        (e) =>
+          e.customerId === customerId &&
+          e.delta > 0 &&
+          (e.reason === 'earn' || e.reason === 'reconciliation') &&
+          e.createdAt >= since,
+      )
+      .reduce((sum, e) => sum + e.delta, 0);
   }
 
   private appendUnlocked(draft: LedgerEntryDraft): AppendResult {

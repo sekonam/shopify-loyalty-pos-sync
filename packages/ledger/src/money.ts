@@ -36,6 +36,20 @@ export function floorProduct(a: string | number, b: string | number): number {
   return Number(floored);
 }
 
+/** Exact product of two decimals, as a decimal string (no float drift). */
+export function mulDecimals(a: string | number, b: string | number): string {
+  const da = parseDecimal(a);
+  const db = parseDecimal(b);
+  const value = da.value * db.value;
+  const scale = da.scale + db.scale;
+  if (scale === 0) return value.toString();
+  const sign = value < 0n ? '-' : '';
+  const abs = value < 0n ? -value : value;
+  const divisor = 10n ** BigInt(scale);
+  const frac = (abs % divisor).toString().padStart(scale, '0').replace(/0+$/, '');
+  return frac === '' ? `${sign}${abs / divisor}` : `${sign}${abs / divisor}.${frac}`;
+}
+
 /**
  * Exact sum of decimal-string amounts (e.g. refund transaction amounts),
  * returned as a decimal string. Handles any scale — 0-decimal (JPY) and

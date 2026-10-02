@@ -331,9 +331,17 @@ export function createApp(deps: AppDeps): Hono<Env> {
   merchant.get('/ledger.csv', async (c) => {
     const shopDomain = c.get('shopDomain');
     const customerId = c.req.query('customerId');
-    const entries = customerId
+    const reason = c.req.query('reason');
+    const channel = c.req.query('channel');
+    const all = customerId
       ? await deps.ledger.entries(shopDomain, customerId)
       : await deps.ledger.entriesForShop(shopDomain);
+    // The export matches what the merchant is looking at — downloading a
+    // filtered view and getting the whole ledger is a nasty surprise at
+    // reconciliation time.
+    const entries = all.filter(
+      (e) => (!reason || e.reason === reason) && (!channel || e.sourceName === channel),
+    );
     const header = 'id,customer_id,order_id,refund_id,source_name,delta,reason,created_at';
     const lines = entries.map((e) =>
       [
@@ -373,13 +381,17 @@ export function createApp(deps: AppDeps): Hono<Env> {
     }
     const batchId = body.batchId ?? randomUUID();
     const awards = body.awards ?? [];
+    // A typo, a pasted email, or a name would otherwise become a permanent
+    // ledger row against an identity that does not exist — in an append-only
+    // ledger there is nothing to delete afterwards.
+    const customerGidPattern = /^gid:\/\/shopify\/Customer\/\d+$/;
     if (
       awards.length === 0 ||
       awards.length > 500 ||
       !awards.every(
         (a) =>
           typeof a.customerId === 'string' &&
-          a.customerId !== '' &&
+          customerGidPattern.test(a.customerId) &&
           Number.isInteger(a.points) &&
           a.points !== 0,
       )

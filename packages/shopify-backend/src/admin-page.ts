@@ -46,6 +46,7 @@ ${faviconLink()}
 
   <!-- ============ OVERVIEW ============ -->
   <section id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" class="stack">
+    <div id="getting-started"></div>
     <div class="grid grid-stats" id="stats"></div>
     <div id="recon"></div>
     <div class="card">
@@ -93,6 +94,7 @@ ${faviconLink()}
             <span class="field-help">Stops one-point redemptions at the register.</span>
           </div>
         </div>
+        <div id="core-confirm"></div>
       </div>
       <div class="card-footer">
         <button class="btn btn-primary" id="saveCore" type="button">Save</button>
@@ -297,7 +299,7 @@ function money(amount, currency) {
 }
 let state = {
   entries: [], shown: PAGE_SIZE, shopDomain: null, currency: null, settings: null,
-  totalEntries: 0, lookup: null,
+  totalEntries: 0, lookup: null, outstanding: 0, entriesLoaded: false,
 };
 
 /* ---------- plumbing ---------- */
@@ -395,11 +397,16 @@ function relativeTime(iso) {
 function renderOverview(o) {
   state.shopDomain = o.shopDomain;
   state.currency = o.currency;
+  state.outstanding = o.stats.outstandingPoints;
   const stats = $('stats');
   stats.textContent = '';
   stats.append(
     statTile('Members with points', nf.format(o.stats.members), nf.format(o.stats.entryCount) + ' ledger entries'),
-    statTile('Points outstanding', nf.format(o.stats.outstandingPoints), 'Worth ' + money(o.outstandingValue, o.currency)),
+    statTile(
+      'Points outstanding',
+      nf.format(o.stats.outstandingPoints),
+      o.currency ? 'Worth ' + money(o.outstandingValue, o.currency) : 'Value shown once the first order arrives',
+    ),
     statTile('Points issued', nf.format(o.stats.issuedInWindow), 'Last ' + o.windowDays + ' days'),
     statTile('Points redeemed', nf.format(o.stats.redeemedInWindow), 'Last ' + o.windowDays + ' days'),
   );
@@ -434,6 +441,42 @@ function renderOverview(o) {
   }
   banner.appendChild(content);
   recon.appendChild(banner);
+
+  // A brand-new shop needs a path, not four zeros.
+  const started = $('getting-started');
+  started.textContent = '';
+  if (o.stats.entryCount === 0) {
+    const card = el('div', 'card');
+    const header = el('div', 'card-header');
+    const head = el('div');
+    head.append(
+      el('h2', 'card-title', 'Three steps to go live'),
+      el('p', 'card-description', 'The program is already running with sensible defaults — these are the steps that make it visible to customers.'),
+    );
+    header.appendChild(head);
+    const body = el('div', 'card-body stack');
+    const steps = [
+      ['Check your rates', 'Decide what a point is worth before anyone earns one. Defaults: 1 point per 1.00 spent, 100 points for 1.00 off.', 'program'],
+      ['Add the loyalty block to checkout', 'In the checkout editor, add the Loyalty balance block and set its backend URL, or shoppers will never see their points.', null],
+      ['Make a test sale', 'Pay a test order online or at the register — the points land here within seconds.', null],
+    ];
+    for (const [i, [title, detail, goto]] of steps.entries()) {
+      const row = el('div', 'row');
+      row.appendChild(badge(String(i + 1)));
+      const text = el('div');
+      text.append(el('div', null, title), el('div', 'field-help', detail));
+      row.appendChild(text);
+      if (goto) {
+        const go = el('button', 'btn btn-sm row-end', 'Open Program');
+        go.type = 'button';
+        go.onclick = () => showTab(goto);
+        row.appendChild(go);
+      }
+      body.appendChild(row);
+    }
+    card.append(header, body);
+    started.appendChild(card);
+  }
 
   const summary = $('program-summary');
   summary.textContent = '';
@@ -497,6 +540,7 @@ function syncTiersEmpty() {
  * unsaved edits sitting in another.
  */
 function renderCore(s) {
+  state.settings = Object.assign({}, state.settings, s);
   $('earnRate').value = s.earnRate;
   $('redemptionRate').value = s.redemptionRate;
   $('minRedemption').value = s.minRedemption;
@@ -505,6 +549,7 @@ function renderCore(s) {
   validateCore();
 }
 function renderRules(s) {
+  state.settings = Object.assign({}, state.settings, s);
   const channels = $('channels');
   channels.textContent = '';
   for (const c of CHANNELS) channels.appendChild(channelRow(c, (s.channelRules || {})[c.key]));
@@ -513,6 +558,7 @@ function renderRules(s) {
   validateRules();
 }
 function renderTiers(s) {
+  state.settings = Object.assign({}, state.settings, s);
   const tbody = document.querySelector('#tiers tbody');
   tbody.textContent = '';
   // Ascending by threshold: the list then reads the way the ladder works.
@@ -523,6 +569,7 @@ function renderTiers(s) {
   validateTiers();
 }
 function renderReferral(s) {
+  state.settings = Object.assign({}, state.settings, s);
   $('refEnabled').checked = !!(s.referral && s.referral.enabled);
   $('refAdvocate').value = s.referral ? s.referral.advocatePoints : 200;
   $('refFriend').value = s.referral ? s.referral.friendPoints : 100;
@@ -660,7 +707,8 @@ window.addEventListener('beforeunload', (e) => {
   e.returnValue = '';
 });
 
-$('saveCore').onclick = async () => {
+async function commitCore() {
+  $('core-confirm').textContent = '';
   $('coreError').textContent = '';
   busy($('saveCore'), true);
   const { ok, body } = await putSettings({
@@ -671,6 +719,39 @@ $('saveCore').onclick = async () => {
   busy($('saveCore'), false, 'Save');
   if (!ok) { $('coreError').textContent = body.error || 'Could not save.'; return; }
   renderCore(body); toast('Earning and redemption saved'); refreshOverview();
+}
+$('saveCore').onclick = () => {
+  if (!validateCore()) return;
+  const next = $('redemptionRate').value.trim();
+  const previous = state.settings ? String(state.settings.redemptionRate) : next;
+  // Changing what a point is worth silently revalues every point already in
+  // customers' hands — show the before and after before committing to it.
+  if (next === previous || state.outstanding <= 0 || !state.currency) return commitCore();
+  const panel = $('core-confirm');
+  panel.textContent = '';
+  const before = state.outstanding / Number(previous);
+  const after = state.outstanding / Number(next);
+  const b = el('div', 'banner banner-warning');
+  const inner = el('div');
+  inner.append(
+    el('div', 'banner-title', 'This changes what points already issued are worth'),
+    el('p', null,
+      'Customers hold ' + nf.format(state.outstanding) + ' points. They are worth ' +
+      money(before.toFixed(2), state.currency) + ' today and would be worth ' +
+      money(after.toFixed(2), state.currency) + ' after this change.'),
+  );
+  const actions = el('div', 'row');
+  const go = el('button', 'btn btn-sm btn-primary', 'Change the rate anyway');
+  go.type = 'button';
+  go.onclick = () => commitCore();
+  const cancel = el('button', 'btn btn-sm btn-plain', 'Cancel');
+  cancel.type = 'button';
+  cancel.onclick = () => { panel.textContent = ''; renderCore(state.settings); };
+  actions.append(go, cancel);
+  inner.appendChild(actions);
+  b.appendChild(inner);
+  panel.appendChild(b);
+  return undefined;
 };
 
 $('saveRules').onclick = async () => {
@@ -798,7 +879,13 @@ function renderAwardPreview() {
 // The batch id is minted once per list and reused on retries, so a request
 // that times out client-side cannot double-award when clicked again.
 let awardBatchId = null;
-$('awardList').addEventListener('input', () => { awardBatchId = null; renderAwardPreview(); });
+$('awardList').addEventListener('input', () => {
+  awardBatchId = null;
+  $('awardResult').hidden = true;
+  $('awardResult').textContent = '';
+  $('awardStatus').textContent = '';
+  renderAwardPreview();
+});
 $('applyAwards').onclick = async () => {
   const rows = parseAwards($('awardList').value);
   const status = $('awardStatus');
@@ -874,7 +961,7 @@ function entryRow(e) {
   const tr = el('tr');
   const when = el('td');
   when.appendChild(el('span', null, new Date(e.createdAt).toLocaleString(undefined, {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   })));
   tr.appendChild(when);
   const cust = el('td');
@@ -889,11 +976,31 @@ function entryRow(e) {
   channel.appendChild(badge(CHANNEL_LABEL[e.sourceName] || e.sourceName, CHANNEL_TONE[e.sourceName]));
   tr.appendChild(channel);
   const order = el('td');
-  order.appendChild(el('span', 'mono', (e.orderId || '').replace('gid://shopify/Order/', '') || '—'));
+  const orderNum = (e.orderId || '').replace('gid://shopify/Order/', '');
+  if (orderNum && state.shopDomain) {
+    const a = el('a', 'mono', orderNum);
+    a.href = 'https://' + state.shopDomain + '/admin/orders/' + orderNum;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    order.appendChild(a);
+  } else {
+    order.appendChild(el('span', 'mono', orderNum || '—'));
+  }
   tr.appendChild(order);
   return tr;
 }
 function renderEntries() {
+  // Until the first load lands, say so — otherwise the overview render beats
+  // the entries request and a busy shop is told it has no activity.
+  if (!state.entriesLoaded) {
+    $('entries-empty').hidden = false;
+    $('entries-empty-title').textContent = 'Loading…';
+    $('entries-empty-body').textContent = '';
+    $('recent-empty').hidden = false;
+    $('recent-empty').querySelector('.empty-title').textContent = 'Loading…';
+    $('ledger-count').textContent = '';
+    return;
+  }
   const rows = filtered();
   const tbody = document.querySelector('#entries tbody');
   tbody.textContent = '';
@@ -922,6 +1029,7 @@ function renderEntries() {
   recent.textContent = '';
   for (const e of state.entries.slice(0, 6)) recent.appendChild(entryRow(e));
   $('recent-empty').hidden = state.entries.length > 0;
+  $('recent-empty').querySelector('.empty-title').textContent = 'No points activity yet';
 }
 for (const id of ['filter-reason', 'filter-channel']) {
   $(id).addEventListener('input', () => { state.shown = PAGE_SIZE; renderEntries(); });
@@ -948,6 +1056,7 @@ async function lookupCustomer() {
     ]);
     // Authoritative for this customer: their whole history, not the recent window.
     state.entries = entries.entries.slice().reverse();
+    state.entriesLoaded = true;
     state.lookup = { customerId, raw };
     state.shown = PAGE_SIZE;
     renderLookup(balance, entries.entries.length);
@@ -1029,20 +1138,27 @@ $('lookup-clear').onclick = async () => {
 $('loadMore').onclick = () => { state.shown += PAGE_SIZE; renderEntries(); };
 
 $('export').onclick = async () => {
-  const res = await authed('/api/ledger.csv');
+  // Export exactly what is on screen, filters and lookup included.
+  const params = new URLSearchParams();
+  if (state.lookup) params.set('customerId', state.lookup.customerId);
+  if ($('filter-reason').value) params.set('reason', $('filter-reason').value);
+  if ($('filter-channel').value) params.set('channel', $('filter-channel').value);
+  const query = params.toString();
+  const res = await authed('/api/ledger.csv' + (query ? '?' + query : ''));
   const blob = await res.blob();
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'points-ledger.csv';
   a.click();
   URL.revokeObjectURL(a.href);
-  toast('CSV downloaded');
+  toast(query ? 'CSV downloaded for this view' : 'CSV downloaded');
 };
 
 /* ---------- load ---------- */
 async function loadEntries() {
   const { entries } = await (await authed('/api/entries?limit=' + LEDGER_WINDOW)).json();
   state.entries = entries.slice().reverse();
+  state.entriesLoaded = true;
   state.lookup = null;
   $('lookup-clear').hidden = true;
   renderEntries();

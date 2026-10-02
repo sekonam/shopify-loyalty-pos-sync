@@ -374,6 +374,30 @@ describe('customer identity resolution', () => {
   });
 });
 
+describe('GET /api/entries', () => {
+  it('returns the most recent entries when a limit is given', async () => {
+    const { app, deps } = makeApp();
+    for (let i = 1; i <= 5; i++) {
+      await deps.ledger.append({
+        shopDomain: SHOP,
+        customerId: CUSTOMER,
+        orderId: `gid://shopify/Order/${i}`,
+        sourceName: 'web',
+        delta: i,
+        reason: 'earn',
+        idempotencyKey: `order_paid:${i}`,
+      });
+    }
+    const res = await app.request(await authed('/entries?limit=2'));
+    const { entries } = (await res.json()) as { entries: Array<{ delta: number }> };
+    // The two newest, still oldest-first within the window.
+    expect(entries.map((e) => e.delta)).toEqual([4, 5]);
+
+    const all = await app.request(await authed('/entries'));
+    expect(((await all.json()) as { entries: unknown[] }).entries).toHaveLength(5);
+  });
+});
+
 describe('GET /api/overview', () => {
   it('reports program metrics, outstanding value, and configuration summary', async () => {
     const { app, deps } = makeApp();

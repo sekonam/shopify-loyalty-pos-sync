@@ -9,6 +9,9 @@ import { useEffect, useRef, useState } from 'preact/hooks';
  * written to the ledger FIRST (atomic backend call); only a confirmed
  * redemption is mirrored into cart attributes, which the discount Function
  * then materializes. One write path, shared with POS.
+ *
+ * Reading order on screen: what you have, then what you can spend here, then
+ * the referral program. Nothing below the fold competes with the balance.
  */
 
 interface BalanceResponse {
@@ -33,6 +36,25 @@ function presentmentCurrency(): string | undefined {
   const total = (shopify as unknown as { cost?: { totalAmount?: { value?: { currencyCode?: string } } } })
     .cost?.totalAmount?.value;
   return total?.currencyCode;
+}
+
+/**
+ * Amounts arrive from the backend as plain decimal strings. Shoppers read
+ * prices, not decimals, so they get the buyer's own currency formatting —
+ * falling back to the bare amount if the runtime can't format that code.
+ */
+function money(amount: string | number, currency?: string | null): string {
+  const value = typeof amount === 'string' ? Number(amount) : amount;
+  if (!Number.isFinite(value)) return String(amount);
+  const code = currency ?? presentmentCurrency();
+  if (code) {
+    try {
+      return new Intl.NumberFormat(undefined, { style: 'currency', currency: code }).format(value);
+    } catch {
+      // Unknown currency code — fall through to the plain amount.
+    }
+  }
+  return value.toFixed(2);
 }
 
 type Phase =
@@ -116,14 +138,46 @@ function Checkout() {
   };
 
   if (hidden) return null;
-  if (info === undefined) return <s-text>Loading loyalty balance…</s-text>;
+  if (info === undefined) {
+    return (
+      <s-stack direction="inline" gap="small-100" alignItems="center">
+        <s-spinner accessibilityLabel="Loading your points" />
+        <s-text color="subdued">Loading your points…</s-text>
+      </s-stack>
+    );
+  }
+
+  const rate = Number(info.redemptionRate);
+  const canConvert = Number.isFinite(rate) && rate > 0;
+  const enoughToRedeem = info.balance >= info.minRedemption;
+  // Only ever names a number the backend would accept, so the preview can't
+  // promise a discount the redeem call would then refuse.
+  const amountIssue =
+    points <= 0
+      ? undefined
+      : points < info.minRedemption
+        ? `Enter at least ${info.minRedemption} points.`
+        : points > info.balance
+          ? `You only have ${info.balance} points.`
+          : undefined;
+  const preview =
+    canConvert && points > 0 && amountIssue === undefined
+      ? `${points} points → ${money(points / rate, info.currency)} off this order`
+      : undefined;
 
   const redeemDisabled =
     redeemed ||
     phase.name === 'redeeming' ||
     points <= 0 ||
-    points < info.minRedemption ||
-    points > info.balance;
+    amountIssue !== undefined;
+
+  /** A different amount is a different attempt, so the id is re-minted. */
+  const setAmount = (next: number): void => {
+    if (next === points) return;
+    attemptIdRef.current = undefined;
+    setPoints(next);
+    if (phase.name === 'done') setPhase({ name: 'idle' });
+  };
 
   const onRedeem = async () => {
     setPhase({ name: 'redeeming' });
@@ -149,10 +203,10 @@ function Checkout() {
           tone: 'warning',
           message:
             body.status === 'rejected_insufficient_balance'
-              ? 'Not enough points for that redemption.'
+              ? "You don't have that many points, so nothing was taken. Try a smaller amount."
               : body.status === 'rejected_below_minimum'
-                ? `Minimum redemption is ${info.minRedemption} points.`
-                : 'Redemption was not applied.',
+                ? `The smallest redemption is ${info.minRedemption} points.`
+                : "That didn't go through, and no points were taken. Try again in a moment.",
         });
         return;
       }
@@ -177,7 +231,7 @@ function Checkout() {
           name: 'done',
           tone: 'critical',
           message:
-            'Points were reserved but the discount could not be attached to this checkout. Contact the store to restore your points.',
+            'Your points were set aside but the discount could not be added to this order. Contact the store and they can put the points back.',
         });
         return;
       }
@@ -185,43 +239,84 @@ function Checkout() {
       setPhase({
         name: 'done',
         tone: 'success',
-        message: `${points} points redeemed — ${body.discountAmount} off applied.`,
+        message: `${points} points redeemed — ${money(body.discountAmount, info.currency)} off this order.`,
       });
     } catch {
       // attemptIdRef kept: pressing Redeem again replays the same attempt.
       setPhase({
         name: 'done',
         tone: 'critical',
-        message: "Couldn't reach the loyalty service. Try again — you won't be charged twice.",
+        message: "We couldn't reach your points balance. Try again — you won't be charged twice.",
       });
     }
   };
 
+  const showReferralSection = referral !== undefined || info.referralEligible === true;
+
   return (
-    <s-stack direction="block">
+    <s-stack id="loyalty-points" direction="block" gap="base">
       <s-heading>Loyalty points</s-heading>
-      <s-text>{`You have ${info.balance} points (worth up to ${info.maxDiscountAmount}).`}</s-text>
-      {info.tier?.name ? (
-        <s-text>{`${info.tier.name} member — ${info.tier.multiplier}× points on every order.`}</s-text>
-      ) : null}
-      {redeemed ? null : (
-        <s-number-field
-          label="Points to redeem"
-          value={String(points)}
-          min={0}
-          onChange={(e: Event) => {
-            attemptIdRef.current = undefined; // new amount = new attempt
-            setPoints(
-              Number.parseInt((e.currentTarget as { value?: string } | null)?.value ?? '', 10) ||
-                0,
-            );
-          }}
-        ></s-number-field>
-      )}
-      {redeemed ? null : (
-        <s-button disabled={redeemDisabled} loading={phase.name === 'redeeming'} onClick={onRedeem}>
-          Redeem points
-        </s-button>
+
+      {/* 1 — what you have */}
+      <s-stack direction="block" gap="small-400">
+        <s-stack direction="inline" gap="small-200" alignItems="center">
+          <s-text id="loyalty-balance" type="strong">{`${info.balance} points`}</s-text>
+          {info.tier?.name ? <s-badge>{info.tier.name}</s-badge> : null}
+        </s-stack>
+        <s-text color="subdued">
+          {info.balance > 0
+            ? `Worth up to ${money(info.maxDiscountAmount, info.currency)} off.`
+            : 'Your first points land when this order is paid.'}
+        </s-text>
+        {info.tier?.name ? (
+          <s-text type="small" color="subdued">
+            {`Earning ${info.tier.multiplier}× points on every order.`}
+          </s-text>
+        ) : null}
+      </s-stack>
+
+      {/* 2 — what you can spend here */}
+      <s-divider />
+      {redeemed ? null : enoughToRedeem ? (
+        <s-stack direction="block" gap="small-200">
+          <s-number-field
+            id="points-field"
+            label="Points to redeem"
+            value={String(points)}
+            min={0}
+            max={info.balance}
+            {...(amountIssue !== undefined ? { error: amountIssue } : {})}
+            onChange={(e: Event) => {
+              setAmount(
+                Number.parseInt((e.currentTarget as { value?: string } | null)?.value ?? '', 10) ||
+                  0,
+              );
+            }}
+          ></s-number-field>
+          <s-text type="small" color="subdued">
+            {canConvert
+              ? `${info.minRedemption} points minimum · ${info.redemptionRate} points = ${money(1, info.currency)} off`
+              : `${info.minRedemption} points minimum`}
+          </s-text>
+          {preview ? (
+            <s-text id="redeem-preview" type="strong">
+              {preview}
+            </s-text>
+          ) : null}
+          <s-button
+            id="redeem-submit"
+            variant="primary"
+            disabled={redeemDisabled}
+            loading={phase.name === 'redeeming'}
+            onClick={onRedeem}
+          >
+            Redeem points
+          </s-button>
+        </s-stack>
+      ) : (
+        <s-text color="subdued">
+          {`${info.minRedemption - info.balance} more points and you can start redeeming.`}
+        </s-text>
       )}
       {phase.name === 'done' ? (
         <s-banner
@@ -231,26 +326,64 @@ function Checkout() {
           {phase.message}
         </s-banner>
       ) : null}
-      {info.referralEligible === true && friendCodeState !== 'applied' ? (
-        <s-stack direction="block">
-          <s-text-field
-            label="Have a referral code?"
-            value={friendCode}
-            onChange={(e: Event) =>
-              setFriendCode((e.currentTarget as { value?: string } | null)?.value ?? '')
-            }
-          ></s-text-field>
-          <s-button onClick={onApplyFriendCode}>Apply referral code</s-button>
-          {friendCodeState === 'failed' ? (
-            <s-text tone="critical">Couldn't attach the code to this checkout.</s-text>
-          ) : null}
-        </s-stack>
-      ) : null}
-      {friendCodeState === 'applied' ? (
-        <s-text>Referral code applied — the bonus lands after this order is paid.</s-text>
-      ) : null}
-      {referral ? (
-        <s-text color="subdued">{`Share your code ${referral.code} — you get ${referral.advocatePoints} points, friends get ${referral.friendPoints}.`}</s-text>
+
+      {/* 3 — the referral program, last */}
+      {showReferralSection ? (
+        <>
+          <s-divider />
+          <s-stack direction="block" gap="small-300">
+            <s-text type="strong">Invite a friend</s-text>
+            {referral ? (
+              <s-stack
+                direction="block"
+                gap="small-300"
+                background="subdued"
+                border="base"
+                borderRadius="base"
+                padding="base"
+              >
+                <s-text type="small" color="subdued">
+                  Share your code
+                </s-text>
+                <s-text id="referral-code" type="strong">
+                  {referral.code}
+                </s-text>
+                <s-text color="subdued">
+                  {`They get ${referral.friendPoints} points on their first order — you get ${referral.advocatePoints}.`}
+                </s-text>
+              </s-stack>
+            ) : null}
+            {info.referralEligible === true && friendCodeState !== 'applied' ? (
+              <s-stack direction="block" gap="small-200">
+                <s-text-field
+                  id="friend-code-field"
+                  label="Referral code from a friend"
+                  value={friendCode}
+                  onChange={(e: Event) =>
+                    setFriendCode((e.currentTarget as { value?: string } | null)?.value ?? '')
+                  }
+                ></s-text-field>
+                <s-button
+                  id="friend-code-submit"
+                  disabled={friendCode.trim() === ''}
+                  onClick={onApplyFriendCode}
+                >
+                  Apply referral code
+                </s-button>
+                {friendCodeState === 'failed' ? (
+                  <s-text tone="critical">
+                    That code couldn't be added to this order. Check it and try again.
+                  </s-text>
+                ) : null}
+              </s-stack>
+            ) : null}
+            {friendCodeState === 'applied' ? (
+              <s-text tone="success">
+                Referral code applied — the bonus points land once this order is paid.
+              </s-text>
+            ) : null}
+          </s-stack>
+        </>
       ) : null}
     </s-stack>
   );

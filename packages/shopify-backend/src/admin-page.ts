@@ -252,10 +252,15 @@ const REASON_TONE = {
   refund_reversal: 'badge-warning', reconciliation: 'badge-info',
 };
 const PAGE_SIZE = 25;
+// The dashboard loads a recent window rather than the whole ledger; the true
+// total comes from the overview, so the table can say what it is showing.
+const LEDGER_WINDOW = 500;
 
 const $ = (id) => document.getElementById(id);
 const nf = new Intl.NumberFormat();
-let state = { entries: [], shown: PAGE_SIZE, shopDomain: null, currency: null, settings: null };
+let state = {
+  entries: [], shown: PAGE_SIZE, shopDomain: null, currency: null, settings: null, totalEntries: 0,
+};
 
 /* ---------- plumbing ---------- */
 async function getToken() {
@@ -637,9 +642,12 @@ function renderEntries() {
   $('shown-count').textContent = rows.length
     ? 'Showing ' + Math.min(state.shown, rows.length) + ' of ' + nf.format(rows.length)
     : '';
+  const total = Math.max(state.totalEntries, state.entries.length);
   $('ledger-count').textContent = fresh
     ? 'Nothing recorded yet.'
-    : nf.format(state.entries.length) + ' entries, newest first.';
+    : total > state.entries.length
+      ? nf.format(total) + ' entries. Showing the most recent ' + nf.format(state.entries.length) + ', newest first.'
+      : nf.format(total) + ' entries, newest first.';
 
   const recent = document.querySelector('#recent tbody');
   recent.textContent = '';
@@ -664,12 +672,15 @@ $('export').onclick = async () => {
 
 /* ---------- load ---------- */
 async function loadEntries() {
-  const { entries } = await (await authed('/api/entries')).json();
+  const { entries } = await (await authed('/api/entries?limit=' + LEDGER_WINDOW)).json();
   state.entries = entries.slice().reverse();
   renderEntries();
 }
 async function refreshOverview() {
-  renderOverview(await (await authed('/api/overview')).json());
+  const overview = await (await authed('/api/overview')).json();
+  state.totalEntries = overview.stats.entryCount;
+  renderOverview(overview);
+  renderEntries();
 }
 async function load() {
   $('load-error').hidden = true;

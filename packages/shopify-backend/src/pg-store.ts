@@ -227,10 +227,13 @@ export class PgLedgerStore implements LedgerStore {
 
   async entriesForShop(shopDomain: string, limit = 10_000): Promise<PointsLedgerEntry[]> {
     const { rows } = await this.db.query(
-      `select * from points_ledger_entry
-        where shop_domain = $1
-        order by created_at, id
-        limit $2`,
+      `select * from (
+         select * from points_ledger_entry
+          where shop_domain = $1
+          order by created_at desc, id desc
+          limit $2
+       ) recent
+       order by created_at, id`,
       [shopDomain, limit],
     );
     return rows.map(rowToEntry);

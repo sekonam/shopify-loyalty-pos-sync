@@ -1,12 +1,12 @@
 /// <reference types="@shopify/ui-extensions/pos.customer-details.block.render" />
 import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { customerGid, fetchBalance } from './client.js';
+import { customerGid, fetchBalance, type BalanceResponse } from './client.js';
 import { balanceView, failedFetch, type FetchState } from './state.js';
 
 function Block() {
   const [lastFetch, setLastFetch] = useState<FetchState>(undefined);
-  const [tierName, setTierName] = useState<string | undefined>(undefined);
+  const [info, setInfo] = useState<BalanceResponse | undefined>(undefined);
   const [connection, setConnection] = useState(
     shopify.connectivity.current.value.internetConnected,
   );
@@ -24,7 +24,7 @@ function Block() {
       .then((res) => {
         if (cancelled) return;
         setLastFetch({ ok: true, balance: res.balance, at: new Date() });
-        setTierName(res.tier?.name);
+        setInfo(res);
       })
       .catch(() => {
         if (!cancelled) setLastFetch(failedFetch);
@@ -35,23 +35,37 @@ function Block() {
   }, [connection]);
 
   const view = balanceView({ connection, lastFetch });
+  const tierName = view.kind === 'live' ? info?.tier?.name : undefined;
+  // Only ever paired with a confirmed balance, so it can't imply a live number.
+  const worth =
+    view.kind === 'live' && info !== undefined && (view.balance ?? 0) > 0
+      ? `Worth up to ${info.maxDiscountAmount} off a sale.`
+      : view.kind === 'live'
+        ? 'No points yet — they start adding up with the next sale.'
+        : undefined;
+
   return (
-    <s-pos-block>
-      <s-stack direction="block">
-        <s-heading>Loyalty points</s-heading>
-        {view.balance !== undefined ? (
-          <s-text>{`${view.balance} points`}</s-text>
-        ) : (
-          <s-text color="subdued">—</s-text>
-        )}
-        <s-text color="subdued">{view.statusLine}</s-text>
-        {view.kind === 'live' ? (
-          <s-badge tone="success">Synced</s-badge>
-        ) : view.kind === 'loading' ? null : (
-          <s-badge tone="warning">Not live</s-badge>
-        )}
-        {tierName && view.kind === 'live' ? <s-badge>{tierName}</s-badge> : null}
-      </s-stack>
+    <s-pos-block heading="Loyalty points">
+      {view.kind === 'loading' ? (
+        <s-stack direction="inline" gap="small-100" alignItems="center">
+          <s-spinner accessibilityLabel="Checking the loyalty balance" />
+          <s-text color="subdued">{view.statusLine}</s-text>
+        </s-stack>
+      ) : (
+        <s-stack direction="block" gap="small-300">
+          <s-stack direction="inline" gap="small-200" alignItems="center">
+            <s-heading id="loyalty-balance">
+              {view.balance !== undefined ? `${view.balance} points` : 'Balance unavailable'}
+            </s-heading>
+            {view.badge ? <s-badge tone={view.badge.tone}>{view.badge.label}</s-badge> : null}
+            {tierName ? <s-badge tone="info">{tierName}</s-badge> : null}
+          </s-stack>
+          {worth ? <s-text color="subdued">{worth}</s-text> : null}
+          <s-text type="small" color="subdued">
+            {view.statusLine}
+          </s-text>
+        </s-stack>
+      )}
     </s-pos-block>
   );
 }

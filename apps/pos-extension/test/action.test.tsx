@@ -14,10 +14,9 @@ const balancePayload = {
   maxDiscountAmount: '2.50',
 };
 
-const redeemButton = () =>
-  Array.from(document.body.querySelectorAll('s-button')).find((b) =>
-    b.textContent?.includes('Redeem and apply discount'),
-  ) as HTMLElement;
+const redeemButton = () => document.body.querySelector('#redeem-submit') as HTMLElement;
+
+const balanceHeading = () => document.body.querySelector('#loyalty-balance')?.textContent;
 
 const setPoints = (value: string) => {
   const field = document.body.querySelector('s-number-field') as HTMLElement & { value: string };
@@ -56,7 +55,7 @@ describe('redeem action modal', () => {
     extension.shopify.cart.applyCartDiscount = applyCartDiscount;
 
     await extension.render();
-    await waitFor(() => expect(document.body.textContent).toContain('250 points available'));
+    await waitFor(() => expect(balanceHeading()).toBe('250 points'));
 
     setPoints('200');
     await waitFor(() => expect(redeemButton().hasAttribute('disabled')).toBe(false));
@@ -65,8 +64,10 @@ describe('redeem action modal', () => {
     await waitFor(() => {
       expect(applyCartDiscount).toHaveBeenCalledWith('FixedAmount', '200 points redeemed', '2.00');
     });
-    expect(document.body.textContent).toContain('Points redeemed and discount applied');
-    expect(document.body.textContent).toContain('50 points available');
+    expect(document.body.textContent).toContain('200 points redeemed. 2.00 is off this sale.');
+    expect(balanceHeading()).toBe('50 points');
+    // A confident finish: the form is replaced by the outcome.
+    expect(redeemButton()).toBeNull();
     const redeemCall = (extension.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
       ([input]) => String(input) === '/api/redeem',
     );
@@ -90,7 +91,7 @@ describe('redeem action modal', () => {
     extension.shopify.cart.applyCartDiscount = applyCartDiscount;
 
     await extension.render();
-    await waitFor(() => expect(document.body.textContent).toContain('250 points available'));
+    await waitFor(() => expect(balanceHeading()).toBe('250 points'));
     setPoints('200');
     await waitFor(() => expect(redeemButton().hasAttribute('disabled')).toBe(false));
     fireEvent.click(redeemButton());
@@ -99,6 +100,57 @@ describe('redeem action modal', () => {
       expect(document.body.textContent).toContain('Not enough points');
     });
     expect(applyCartDiscount).not.toHaveBeenCalled();
+  });
+
+  it('offers one-tap amounts and prices them in money before anything is confirmed', async () => {
+    extension.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify(balancePayload), { status: 200 }));
+    await extension.render();
+    await waitFor(() => expect(balanceHeading()).toBe('250 points'));
+
+    // 100 minimum out of 250 available: the minimum and the whole balance.
+    const picks = Array.from(document.body.querySelectorAll('[id^="quick-pick-"]'));
+    expect(picks.map((p) => p.textContent)).toEqual(['Minimum · 100 pts', 'All · 250 pts']);
+    // The conversion rule is on the field itself, not buried in a tooltip.
+    expect(
+      document.body.querySelector('s-number-field')?.getAttribute('details'),
+    ).toBe('100 points minimum · 100 points = 1.00 off');
+
+    fireEvent.click(picks[1] as HTMLElement);
+    await waitFor(() =>
+      expect(document.body.querySelector('#redeem-preview')?.textContent).toBe(
+        '250 points → 2.50 off this sale',
+      ),
+    );
+    expect(redeemButton().textContent).toBe('Redeem 250 points');
+    expect(redeemButton().hasAttribute('disabled')).toBe(false);
+    expect(extension.fetch).toHaveBeenCalledTimes(1); // nothing written yet
+  });
+
+  it('explains an impossible amount instead of just greying the button out', async () => {
+    extension.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify(balancePayload), { status: 200 }));
+    await extension.render();
+    await waitFor(() => expect(balanceHeading()).toBe('250 points'));
+
+    setPoints('50');
+    await waitFor(() =>
+      expect(document.body.querySelector('s-number-field')?.getAttribute('error')).toBe(
+        'Enter at least 100 points.',
+      ),
+    );
+    expect(redeemButton().hasAttribute('disabled')).toBe(true);
+    expect(document.body.querySelector('#redeem-preview')).toBeNull();
+
+    setPoints('900');
+    await waitFor(() =>
+      expect(document.body.querySelector('s-number-field')?.getAttribute('error')).toBe(
+        'Only 250 points to spend.',
+      ),
+    );
+    expect(redeemButton().hasAttribute('disabled')).toBe(true);
   });
 
   it('disables redemption entirely while offline', async () => {
@@ -137,7 +189,7 @@ describe('redeem action modal', () => {
     extension.shopify.cart.applyCartDiscount = applyCartDiscount;
 
     await extension.render();
-    await waitFor(() => expect(document.body.textContent).toContain('250 points available'));
+    await waitFor(() => expect(balanceHeading()).toBe('250 points'));
     setPoints('200');
     await waitFor(() => expect(redeemButton().hasAttribute('disabled')).toBe(false));
     fireEvent.click(redeemButton());

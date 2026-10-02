@@ -318,9 +318,13 @@ export function createApp(deps: AppDeps): Hono<Env> {
   merchant.get('/entries', async (c) => {
     const shopDomain = c.get('shopDomain');
     const customerId = c.req.query('customerId');
+    const requested = Number(c.req.query('limit'));
+    const limit = Number.isInteger(requested)
+      ? Math.min(Math.max(requested, 1), 10_000)
+      : undefined;
     const entries = customerId
       ? await deps.ledger.entries(shopDomain, customerId)
-      : await deps.ledger.entriesForShop(shopDomain);
+      : await deps.ledger.entriesForShop(shopDomain, limit);
     return c.json({ entries });
   });
 

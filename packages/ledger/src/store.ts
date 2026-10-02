@@ -74,7 +74,11 @@ export interface LedgerStore {
     orderId: string,
     reason?: LedgerReason,
   ): Promise<PointsLedgerEntry | undefined>;
-  /** All entries for a shop, oldest first (admin ledger view / CSV export). */
+  /**
+   * The most recent `limit` entries for a shop, returned oldest-first
+   * (admin ledger view / CSV export). Recency matters more than completeness
+   * for a dashboard; the CSV asks for a limit large enough to be everything.
+   */
   entriesForShop(shopDomain: string, limit?: number): Promise<PointsLedgerEntry[]>;
   /**
    * Purchase points earned since `since` (positive deltas with reason
@@ -203,7 +207,7 @@ export class InMemoryLedgerStore implements LedgerStore {
   }
 
   async entriesForShop(shopDomain: string, limit = 10_000): Promise<PointsLedgerEntry[]> {
-    return (this.entriesByShop.get(shopDomain) ?? []).slice(0, limit);
+    return (this.entriesByShop.get(shopDomain) ?? []).slice(-limit);
   }
 
   async earnedSince(shopDomain: string, customerId: string, since: Date): Promise<number> {

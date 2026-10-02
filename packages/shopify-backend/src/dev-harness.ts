@@ -58,7 +58,7 @@ function consolePage(shop: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Loyalty dev console</title>
 ${faviconLink()}
-<style>${designSystemCss()}
+<style>${designSystemCss({ dark: true })}
   .result { font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; margin: 0;
             padding: var(--space-4); background: var(--surface-subdued); border-radius: var(--radius);
             border: 1px solid var(--border); min-height: 96px; }

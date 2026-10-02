@@ -38,7 +38,9 @@ describe('GET /admin', () => {
       expect(html).toContain(panel);
     }
     expect(html).toContain('role="tablist"');
-    expect(html).toContain('prefers-color-scheme: dark');
+    // Shopify admin has no dark mode: a dark app frame inside the light admin
+    // chrome would look broken, so the admin ships light-only on purpose.
+    expect(html).not.toContain('prefers-color-scheme: dark');
     // Dynamic values go through DOM properties only: no innerHTML assignment
     // of fetched data anywhere in the page script.
     expect(html).not.toMatch(/innerHTML\s*=/);

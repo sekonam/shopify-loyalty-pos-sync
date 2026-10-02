@@ -42,7 +42,10 @@ export function createDevApp(config: DevHarnessConfig): Hono {
     return c.json({ token, kind, shop });
   });
 
-  app.get('/', (c) => c.html(consolePage(config.defaultShop)));
+  app.get('/', (c) => {
+    c.header('cache-control', 'no-store');
+    return c.html(consolePage(config.defaultShop));
+  });
   return app;
 }
 

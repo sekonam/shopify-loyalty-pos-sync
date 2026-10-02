@@ -82,7 +82,12 @@ export function createApp(deps: AppDeps): Hono<Env> {
   app.get('/healthz', (c) => c.json({ ok: true }));
 
   // The embedded admin page; its data calls go through the authed /api routes.
-  app.get('/admin', (c) => c.html(adminPageHtml(deps.apiKey)));
+  // Never cached: the app shell changes with every deploy, and a stale one
+  // talks to an API it no longer matches.
+  app.get('/admin', (c) => {
+    c.header('cache-control', 'no-store');
+    return c.html(adminPageHtml(deps.apiKey));
+  });
 
   // ---- Webhooks: HMAC on the raw bytes, then dispatch. Always answer fast;
   // Shopify's delivery timeout is 5s and non-2xx (incl. redirects) counts failed.

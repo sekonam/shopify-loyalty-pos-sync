@@ -42,6 +42,19 @@ startReconciliationLoop({
   log,
 });
 
+if (process.env['DEV_HARNESS'] === '1') {
+  const { createDevApp } = await import('./dev-harness.js');
+  app.route(
+    '/dev',
+    createDevApp({
+      apiSecret: config.apiSecret,
+      apiKey: config.apiKey,
+      defaultShop: process.env['DEV_SHOP'] ?? 'loyalty-e2e.myshopify.com',
+    }),
+  );
+  console.warn('DEV_HARNESS enabled — /dev mints session tokens. NEVER run this in production.');
+}
+
 serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`loyalty backend listening on :${info.port}`);
 });

@@ -47,8 +47,16 @@ reconciliation job checks the ledger against Shopify's own order history.</p>
 </tr></thead><tbody></tbody></table>
 
 <script>
+async function getToken() {
+  if (window.shopify && window.shopify.idToken) return window.shopify.idToken();
+  // Local dev harness fallback (the /dev routes exist only with DEV_HARNESS=1;
+  // in production this path 404s and the page correctly refuses to load data).
+  const r = await fetch('/dev/token?kind=staff');
+  if (!r.ok) throw new Error('no App Bridge and no dev harness');
+  return (await r.json()).token;
+}
 async function authed(path, init) {
-  const token = await window.shopify.idToken();
+  const token = await getToken();
   return fetch(path, Object.assign({}, init, {
     headers: Object.assign({}, (init && init.headers) || {}, { authorization: 'Bearer ' + token }),
   }));

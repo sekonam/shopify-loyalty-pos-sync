@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { SignJWT } from 'jose';
 import { Hono } from 'hono';
-import { designSystemCss, logoMarkSvg } from './ui/theme.js';
+import { designSystemCss, faviconLink, logoMarkSvg } from './ui/theme.js';
 
 /**
  * LOCAL DEVELOPMENT ONLY — mounted by the server exclusively when
@@ -54,6 +54,7 @@ function consolePage(shop: string): string {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Loyalty dev console</title>
+${faviconLink()}
 <style>${designSystemCss()}
   .result { font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; margin: 0;
             padding: var(--space-4); background: var(--surface-subdued); border-radius: var(--radius);

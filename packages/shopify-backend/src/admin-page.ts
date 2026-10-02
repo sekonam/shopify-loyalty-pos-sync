@@ -1,4 +1,4 @@
-import { designSystemCss, logoMarkSvg } from './ui/theme.js';
+import { designSystemCss, faviconLink, logoMarkSvg } from './ui/theme.js';
 
 /**
  * The embedded merchant admin: an overview dashboard (including the
@@ -20,6 +20,7 @@ export function adminPageHtml(apiKey: string): string {
 <meta name="shopify-api-key" content="${apiKey}" />
 <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
 <title>Loyalty POS Sync</title>
+${faviconLink()}
 <style>${designSystemCss()}</style>
 </head>
 <body>

@@ -287,3 +287,16 @@ export const logoMarkSvg = `<svg width="20" height="20" viewBox="0 0 20 20" fill
   <circle cx="5" cy="5" r="1.6" fill="currentColor"/>
   <circle cx="15" cy="5" r="1.6" fill="currentColor"/>
 </svg>`;
+
+/**
+ * Inline favicon, so a pinned admin tab is identifiable. Self-contained data
+ * URI — no extra request, and nothing to serve or cache-bust.
+ */
+export function faviconLink(): string {
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">` +
+    `<rect width="20" height="20" rx="4.5" fill="#303030"/>` +
+    `<path d="M3.5 13h3.8l1.9-6.5L11.4 16l1.9-6.5h3.2" stroke="#fff" stroke-width="1.6" ` +
+    `fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  return `<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(svg)}" />`;
+}

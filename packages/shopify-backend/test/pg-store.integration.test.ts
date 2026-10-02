@@ -14,6 +14,7 @@ import { createPool, migrate, type Db } from '../src/db.js';
 import { PgLedgerStore } from '../src/pg-store.js';
 import { PgSettingsStore } from '../src/settings.js';
 import { PgComplianceStore, redactedId } from '../src/compliance.js';
+import { PgReferralStore } from '../src/referrals.js';
 
 const SHOP = 'pg-test.myshopify.com';
 const CUSTOMER = 'gid://shopify/Customer/1';
@@ -156,6 +157,58 @@ describe.skipIf(process.env['SKIP_PG_TESTS'] === '1')('PgLedgerStore (Postgres)'
       idempotencyKey: `refund:${c}-2`,
     });
     expect(second).toBeNull();
+  });
+
+  it('earnedSince counts only purchase earns in the window', async () => {
+    const c = `gid://shopify/Customer/${randomUUID()}`;
+    await store.append(earnDraft(`e1-${c}`, 100, c));
+    await store.append({ ...earnDraft(`e2-${c}`, 40, c), reason: 'reconciliation' });
+    await store.append({ ...earnDraft(`e3-${c}`, 500, c), reason: 'referral_reward' });
+    await store.redeem({
+      shopDomain: SHOP,
+      customerId: c,
+      channel: 'web',
+      requestedPoints: 50,
+      minRedemption: 1,
+      attemptId: randomUUID(),
+    });
+    expect(await store.earnedSince(SHOP, c, new Date(Date.now() - 60_000))).toBe(140);
+    expect(await store.earnedSince(SHOP, c, new Date(Date.now() + 60_000))).toBe(0);
+  });
+
+  it('referral store: stable codes, lookup, one referral per friend', async () => {
+    const referrals = new PgReferralStore(db);
+    const advocate = `gid://shopify/Customer/${randomUUID()}`;
+    const friend = `gid://shopify/Customer/${randomUUID()}`;
+    const code = await referrals.codeFor(SHOP, advocate);
+    expect(code).toMatch(/^[A-Z0-9]+$/);
+    expect(await referrals.codeFor(SHOP, advocate)).toBe(code);
+    expect(await referrals.advocateFor(SHOP, code)).toBe(advocate);
+    expect(await referrals.advocateFor(SHOP, 'NO0PE')).toBeUndefined();
+    const record = {
+      advocateCustomerId: advocate,
+      friendCustomerId: friend,
+      code,
+      orderId: 'gid://shopify/Order/1',
+    };
+    expect(await referrals.recordIfFirst(SHOP, record)).toBe(true);
+    expect(
+      await referrals.recordIfFirst(SHOP, { ...record, orderId: 'gid://shopify/Order/2' }),
+    ).toBe(false);
+  });
+
+  it('settings config document round-trips and merges per-field', async () => {
+    const settings = new PgSettingsStore(db);
+    const shop = `cfg-${randomUUID().slice(0, 8)}.myshopify.com`;
+    await settings.upsert(shop, {
+      tiers: [{ name: 'Gold', minEarned365: 1000, multiplier: '2' }],
+      referral: { enabled: true, advocatePoints: 300, friendPoints: 150 },
+    });
+    await settings.upsert(shop, { excludedSources: ['amazon'] }); // must not clobber tiers
+    const loaded = await settings.get(shop);
+    expect(loaded.tiers).toEqual([{ name: 'Gold', minEarned365: 1000, multiplier: '2' }]);
+    expect(loaded.excludedSources).toEqual(['amazon']);
+    expect(loaded.referral).toEqual({ enabled: true, advocatePoints: 300, friendPoints: 150 });
   });
 
   it('settings round-trip and customer redaction', async () => {

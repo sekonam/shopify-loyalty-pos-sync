@@ -64,15 +64,15 @@ describe('checkout loyalty block', () => {
     await waitFor(() => expect(balanceLine()).toBe('250 points'));
     // The hero line is the balance; its worth is secondary, in real currency.
     expect(document.body.textContent).toMatch(/Worth up to \D?2[.,]50\D? off/);
-    // Nothing is previewed until there is an amount worth previewing.
-    expect(document.body.querySelector('#redeem-preview')).toBeNull();
+    // Nothing is priced until there is an amount worth pricing: the button
+    // says what to do rather than what it would do.
+    expect(redeemButton().textContent).toBe('Enter an amount to redeem');
     expect(redeemButton().hasAttribute('disabled')).toBe(true);
 
     setPoints('200');
+    // The consequence is on the button itself, in money — no arithmetic.
     await waitFor(() =>
-      expect(document.body.querySelector('#redeem-preview')?.textContent).toMatch(
-        /200 points → \D?2[.,]00\D? off this order/,
-      ),
+      expect(redeemButton().textContent).toMatch(/Take \D?2[.,]00\D? off this order/),
     );
     expect(redeemButton().hasAttribute('disabled')).toBe(false);
 
@@ -83,7 +83,7 @@ describe('checkout loyalty block', () => {
         'Enter at least 100 points.',
       ),
     );
-    expect(document.body.querySelector('#redeem-preview')).toBeNull();
+    expect(redeemButton().textContent).toBe('Enter an amount to redeem');
     expect(redeemButton().hasAttribute('disabled')).toBe(true);
     // Previewing is local arithmetic: no redeem write happened for any of it.
     expect(
@@ -187,12 +187,174 @@ describe('checkout loyalty block', () => {
       b.textContent?.includes('Apply referral code'),
     ) as HTMLElement;
     fireEvent.click(apply);
-    await waitFor(() => expect(document.body.textContent).toContain('Referral code applied'));
+    // Honest wording: nothing has validated this code yet, so it says the
+    // code was added and when it will actually be checked.
+    await waitFor(() => expect(document.body.textContent).toContain('Referral code added'));
+    expect(document.body.textContent).toContain("check it when this order is paid");
     expect(applyAttributeChange).toHaveBeenCalledWith({
       type: 'updateAttribute',
       key: 'loyalty_referral',
       value: 'ZZ99X', // normalized upper-case
     });
+  });
+
+  it('turns down the shopper\'s own referral code instead of promising a bonus', async () => {
+    extension.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/referral-code')) {
+        return new Response(
+          JSON.stringify({ code: 'AB12C', advocatePoints: 200, friendPoints: 100 }),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({ ...balancePayload, balance: 0, referralEligible: true }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const applyAttributeChange = vi.fn().mockResolvedValue({ type: 'success' });
+    (extension.shopify as unknown as Record<string, unknown>)['applyAttributeChange'] =
+      applyAttributeChange;
+
+    await extension.render();
+    await waitFor(() =>
+      expect(document.body.querySelector('#referral-code')?.textContent).toBe('AB12C'),
+    );
+    const field = document.body.querySelector('s-text-field') as HTMLElement & { value: string };
+    field.value = 'ab12c'; // their own code, any case
+    fireEvent(field, new Event('change', { bubbles: true }));
+    fireEvent.click(document.body.querySelector('#friend-code-submit') as HTMLElement);
+
+    await waitFor(() => expect(document.body.textContent).toContain("That's your own code"));
+    // The backend would silently drop it, so nothing is written to the order.
+    expect(applyAttributeChange).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain('Referral code added');
+  });
+
+  it('redeems the whole balance in ONE tap, with the money on the control', async () => {
+    extension.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/balance')) {
+        return new Response(JSON.stringify(balancePayload), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({ status: 'applied', balance: 0, discountAmount: '2.50' }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const applyAttributeChange = vi.fn().mockResolvedValue({ type: 'success' });
+    (extension.shopify as unknown as Record<string, unknown>)['applyAttributeChange'] =
+      applyAttributeChange;
+
+    await extension.render();
+    await waitFor(() => expect(balanceLine()).toBe('250 points'));
+
+    // 100 minimum of 250: the whole balance first (what most shoppers want),
+    // then the smallest redemption. Each already priced in money.
+    const picks = Array.from(document.body.querySelectorAll('[id^="quick-pick-"]'));
+    expect(picks.map((p) => p.textContent)).toEqual([
+      'Use all 250 points · $2.50 off',
+      'Use 100 points · $1.00 off',
+    ]);
+    // Read correctly aloud, and big enough to hit one-handed.
+    expect(picks[0]?.getAttribute('accessibilitylabel')).toBe(
+      'Use all 250 points for $2.50 off this order',
+    );
+    expect(picks[0]?.getAttribute('inlinesize')).toBe('fill');
+
+    // One tap — no typing, no second confirmation step.
+    fireEvent.click(picks[0] as HTMLElement);
+    await waitFor(() => expect(document.body.textContent).toContain('250 points redeemed'));
+    expect(document.body.textContent).toMatch(/250 points redeemed — \D?2[.,]50\D? off this order/);
+    expect(document.body.textContent).toContain('0 points left');
+    // All three cart attributes still go out on the confirmed redemption.
+    for (const key of ['loyalty_discount', 'loyalty_attempt', 'loyalty_currency']) {
+      expect(applyAttributeChange).toHaveBeenCalledWith(expect.objectContaining({ key }));
+    }
+    // One redemption per checkout: the whole redeem form is gone.
+    expect(document.body.querySelector('[id^="quick-pick-"]')).toBeNull();
+    expect(redeemButton()).toBeNull();
+    const redeemCalls = (extension.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([u]) =>
+      String(u).includes('/api/redeem'),
+    );
+    expect(redeemCalls).toHaveLength(1);
+    expect(JSON.parse((redeemCalls[0]?.[1] as RequestInit).body as string)).toMatchObject({
+      points: 250,
+      channel: 'web',
+    });
+  });
+
+  it('answers the question a shopper hesitates over, without overpromising', async () => {
+    extension.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify(balancePayload), { status: 200 }));
+    await extension.render();
+    await waitFor(() => expect(balanceLine()).toBe('250 points'));
+    const line = document.body.querySelector('#redeem-reassurance')?.textContent ?? '';
+    expect(line).toContain('Points leave your balance as soon as you redeem');
+    // The backend reverses points EARNED on a refunded order; it does not
+    // return points already spent, so this must not claim an automatic
+    // refund of them.
+    expect(line).toContain('the store can put them back');
+    expect(line).not.toMatch(/automatic|refunded to you|back automatically/);
+  });
+
+  it('a one-tap redemption that fails replays the same attempt on a second tap', async () => {
+    const attempts: string[] = [];
+    let failNext = true;
+    extension.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/balance')) {
+        return new Response(JSON.stringify(balancePayload), { status: 200 });
+      }
+      attempts.push(JSON.parse(init?.body as string).attemptId);
+      if (failNext) {
+        failNext = false;
+        throw new TypeError('network lost');
+      }
+      return new Response(
+        JSON.stringify({ status: 'applied', balance: 0, discountAmount: '2.50' }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    (extension.shopify as unknown as Record<string, unknown>)['applyAttributeChange'] = vi
+      .fn()
+      .mockResolvedValue({ type: 'success' });
+
+    await extension.render();
+    await waitFor(() => expect(balanceLine()).toBe('250 points'));
+    const pick = () => document.body.querySelector('#quick-pick-all') as HTMLElement;
+    fireEvent.click(pick());
+    // What happened, that the card is untouched, and the single next action.
+    await waitFor(() => expect(document.body.textContent).toContain("couldn't confirm"));
+    expect(document.body.textContent).toContain('Your card has not been charged');
+    expect(document.body.textContent).toContain("won't be charged twice");
+
+    fireEvent.click(pick());
+    await waitFor(() => expect(document.body.textContent).toContain('250 points redeemed'));
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).toBe(attempts[1]);
+  });
+
+  it('keeps the block (and a retry) when the backend fails, rather than silently vanishing', async () => {
+    let failNext = true;
+    extension.fetch = vi.fn(async () => {
+      if (failNext) {
+        failNext = false;
+        return new Response('upstream exploded', { status: 500 });
+      }
+      return new Response(JSON.stringify(balancePayload), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await extension.render();
+    // Hiding here would quietly charge a shopper with points the full price.
+    await waitFor(() => expect(document.body.textContent).toContain("couldn't load your points"));
+    expect(document.body.textContent).toContain('nothing has been charged');
+    const retry = document.body.querySelector('#balance-retry') as HTMLElement;
+    expect(retry.textContent).toBe('Try again');
+    fireEvent.click(retry);
+    await waitFor(() => expect(balanceLine()).toBe('250 points'));
+    expect(document.body.querySelector('#balance-retry')).toBeNull();
   });
 
   it('hides itself when the checkout currency differs from the shop currency', async () => {

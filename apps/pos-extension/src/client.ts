@@ -12,6 +12,12 @@ export interface BalanceResponse {
   redemptionRate: string;
   tier?: { name: string; multiplier: string; earned365: number } | null;
   maxDiscountAmount: string;
+  /**
+   * Shop currency redemptions are priced in (absent until the shop's first
+   * order tells the backend what it is). Every amount staff read is formatted
+   * with it — a bare "2.50" beside a customer is a question, not an answer.
+   */
+  currency?: string | null;
 }
 
 export type RedeemResponse =

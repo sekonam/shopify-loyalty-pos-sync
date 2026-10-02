@@ -3,22 +3,34 @@ import { render } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { customerGid, fetchBalance, redeemPoints, type BalanceResponse } from './client.js';
 import {
+  CART_WRITE_FAILED,
+  FRESH_FOR_MS,
+  NETWORK_UNCONFIRMED,
   amountIssue,
   balanceView,
   cumulativeDiscount,
   discountValue,
   failedFetch,
   findLoyaltyDiscount,
-  formatAmount,
+  money,
+  quickPickLabel,
   quickPicks,
-  redeemStatusMessage,
+  redeemActionLabel,
+  redeemOutcome,
+  shortOfMinimumLine,
   type FetchState,
+  type RedeemOutcome,
 } from './state.js';
 
-type Phase =
-  | { name: 'idle' }
-  | { name: 'redeeming' }
-  | { name: 'done'; tone: 'success' | 'critical' | 'warning'; message: string };
+type Phase = { name: 'idle' } | { name: 'redeeming' } | ({ name: 'done' } & RedeemOutcome);
+
+/**
+ * The way out of the modal once the sale no longer needs it. POS owns the
+ * modal chrome, so closing is the host's job — there is nothing to unmount.
+ */
+function closeModal(): void {
+  window.close();
+}
 
 function Action() {
   const [info, setInfo] = useState<BalanceResponse | undefined>(undefined);
@@ -33,12 +45,26 @@ function Action() {
   );
   const [points, setPoints] = useState(0);
   const [phase, setPhase] = useState<Phase>({ name: 'idle' });
+  const [checking, setChecking] = useState(false);
+  // A confirmed debit that still owes this sale its discount: the cart write
+  // failed after the ledger committed. While this is true the ONLY offered
+  // actions are replaying that same attempt and leaving — changing the amount
+  // would mint a new attempt id and debit the customer twice.
+  const [owed, setOwed] = useState(false);
+  // Re-rendered on a slow tick so the "Up to date" badge can expire on its
+  // own while the modal sits open through a long sale.
+  const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     const unsubscribe = shopify.connectivity.current.subscribe((state) => {
       setConnection(state.internetConnected);
     });
     return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), FRESH_FOR_MS / 4);
+    return () => clearInterval(timer);
   }, []);
 
   const loadBalance = async (): Promise<void> => {
@@ -49,6 +75,15 @@ function Action() {
     } catch {
       setLastFetch(failedFetch);
     }
+    setNow(Date.now());
+  };
+
+  /** The manual way back from any not-live state — without it, a backend
+   * blip while the device stays online is a dead end with nothing to tap. */
+  const checkAgain = async (): Promise<void> => {
+    setChecking(true);
+    await loadBalance();
+    setChecking(false);
   };
 
   useEffect(() => {
@@ -56,7 +91,7 @@ function Action() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection]);
 
-  const view = balanceView({ connection, lastFetch });
+  const view = balanceView({ connection, lastFetch, now });
 
   /**
    * A different amount is a different attempt, so the id is re-minted — but
@@ -82,23 +117,34 @@ function Action() {
     points <= 0 ||
     issue !== undefined;
 
+  const currency = info?.currency;
   const value =
     info !== undefined && points > 0 ? discountValue(points, info.redemptionRate) : undefined;
-  // Previewed only for an amount that could actually go through, so the number
-  // on screen is never a promise the backend would refuse.
-  const preview =
-    value !== undefined && issue === undefined
-      ? `${points} points → ${formatAmount(value)} off this sale`
-      : undefined;
+  // Priced only for an amount that could actually go through, so the money on
+  // the button is never a promise the backend would refuse.
+  // While a debit is owed a discount, the amount is history rather than a
+  // proposal: it is priced even though it now exceeds the debited balance.
+  const offAmount =
+    value !== undefined && (issue === undefined || owed) ? money(value, currency) : undefined;
+  const pricing = info !== undefined ? { redemptionRate: info.redemptionRate, currency } : undefined;
   const picks =
     view.kind === 'live' && view.balance !== undefined && info !== undefined
-      ? quickPicks(view.balance, info.minRedemption)
+      ? quickPicks(view.balance, info.minRedemption, pricing)
       : [];
   const rules =
     info !== undefined
-      ? `${info.minRedemption} points minimum · ${info.redemptionRate} points = 1.00 off`
+      ? `${info.minRedemption} points minimum · ${info.redemptionRate} points = ${money(1, currency)} off`
       : undefined;
+  // Nothing to redeem yet: say how far off, rather than offering a form that
+  // refuses every number typed into it.
+  const shortBy =
+    view.kind === 'live' && view.balance !== undefined && info !== undefined
+      ? view.balance < info.minRedemption
+      : false;
   const succeeded = phase.name === 'done' && phase.tone === 'success';
+  // After a call that didn't come back, the same button is the recovery — it
+  // replays the held attempt id — so it says so instead of repeating itself.
+  const retrying = phase.name === 'done' && phase.tone === 'critical';
 
   const onRedeem = async () => {
     if (info === undefined) return;
@@ -112,41 +158,55 @@ function Action() {
         attemptId,
         posDeviceId: String(shopify.session.deviceId ?? ''),
       });
-      // Definitive outcome either way: the next redemption is a new attempt.
-      attemptIdRef.current = undefined;
       if (result.status === 'applied' && 'discountAmount' in result) {
-        // Applying replaces the cart-level discount, so re-apply the running
-        // total — a second redemption on the same sale must add to the
-        // discount, not overwrite it and charge the points twice.
-        const prior = findLoyaltyDiscount(shopify.cart.current.value.cartDiscounts ?? []);
-        const total = cumulativeDiscount(prior, { points, amount: result.discountAmount });
-        await shopify.cart.applyCartDiscount('FixedAmount', total.title, total.amount);
+        // The debit is committed. The attempt id is NOT released until the
+        // discount is actually on the sale: if the cart write fails, the only
+        // safe retry is a replay of this same attempt — a fresh id would debit
+        // the customer a second time for one discount.
         setLastFetch({ ok: true, balance: result.balance, at: new Date() });
+        try {
+          // Applying replaces the cart-level discount, so re-apply the running
+          // total — a second redemption on the same sale must add to the
+          // discount, not overwrite it and charge the points twice.
+          const prior = findLoyaltyDiscount(shopify.cart.current.value.cartDiscounts ?? []);
+          const total = cumulativeDiscount(prior, { points, amount: result.discountAmount });
+          await shopify.cart.applyCartDiscount('FixedAmount', total.title, total.amount);
+        } catch {
+          setOwed(true);
+          setPhase({ name: 'done', ...redeemOutcome(CART_WRITE_FAILED, { points }) });
+          return;
+        }
+        attemptIdRef.current = undefined; // done, end to end
+        setOwed(false);
         setPhase({
           name: 'done',
-          tone: 'success',
-          message: redeemStatusMessage('applied', {
+          ...redeemOutcome('applied', {
             points,
-            amount: result.discountAmount,
+            amount: money(result.discountAmount, currency),
+            balance: result.balance,
           }),
         });
       } else {
+        // A rejection wrote nothing, so the next redemption is a new attempt —
+        // unless a debit is already known to have committed, in which case the
+        // id stays held and no second one can ever be minted for it.
+        if (!owed) attemptIdRef.current = undefined;
         setLastFetch({ ok: true, balance: result.balance, at: new Date() });
         setPhase({
           name: 'done',
-          tone: 'warning',
-          message: redeemStatusMessage(result.status, { minRedemption: info.minRedemption }),
+          ...redeemOutcome(result.status, { minRedemption: info.minRedemption }),
         });
       }
     } catch {
       // The write may or may not have landed. attemptIdRef is kept, so a
       // retry replays the same attempt instead of double-debiting; the shown
       // balance is downgraded to unconfirmed and re-read so retry re-enables.
+      // Once a debit is known to have committed, stay on that truth rather
+      // than downgrading to "we're not sure" — the points are gone either way.
       setLastFetch(failedFetch);
       setPhase({
         name: 'done',
-        tone: 'critical',
-        message: redeemStatusMessage('rejected_stale_offline_state'),
+        ...redeemOutcome(owed ? CART_WRITE_FAILED : NETWORK_UNCONFIRMED, { points }),
       });
       void loadBalance();
     }
@@ -170,7 +230,9 @@ function Action() {
                 {view.badge ? <s-badge tone={view.badge.tone}>{view.badge.label}</s-badge> : null}
               </s-stack>
               {view.kind === 'live' && info !== undefined && (view.balance ?? 0) > 0 ? (
-                <s-text color="subdued">{`Worth up to ${info.maxDiscountAmount} off this sale.`}</s-text>
+                <s-text color="subdued">
+                  {`Worth up to ${money(info.maxDiscountAmount, currency)} off this sale.`}
+                </s-text>
               ) : null}
               {view.kind === 'live' ? (
                 <s-text type="small" color="subdued">
@@ -187,10 +249,70 @@ function Action() {
             </s-banner>
           ) : null}
 
-          {succeeded && phase.name === 'done' ? (
-            <s-banner heading="Points redeemed" tone="success">
-              {phase.message}
-            </s-banner>
+          {/*
+            Every not-live state — and a confirmed balance that has gone cold —
+            gets something to tap. Without it a backend blip on a device that
+            stayed online is a dead end: a disabled button and no way forward.
+          */}
+          {view.kind !== 'loading' && !(view.redeemEnabled && view.fresh === true) ? (
+            <s-button
+              id="balance-recheck"
+              variant="secondary"
+              loading={checking}
+              onClick={() => void checkAgain()}
+            >
+              Check again
+            </s-button>
+          ) : null}
+
+          {owed ? (
+            // A committed debit with no discount on the sale. The amount is
+            // locked: the only safe actions are replaying this attempt and
+            // walking away, so nothing else is on screen to tap by mistake.
+            <s-stack direction="block" gap="base">
+              {phase.name === 'done' ? (
+                <s-banner heading={phase.heading} tone={phase.tone}>
+                  {phase.message}
+                </s-banner>
+              ) : null}
+              <s-button
+                id="redeem-submit"
+                variant="primary"
+                disabled={phase.name === 'redeeming'}
+                loading={phase.name === 'redeeming'}
+                onClick={onRedeem}
+              >
+                {redeemActionLabel({ amount: offAmount, retry: true })}
+              </s-button>
+              <s-button id="redeem-close" variant="secondary" onClick={closeModal}>
+                Back to the sale
+              </s-button>
+            </s-stack>
+          ) : succeeded && phase.name === 'done' ? (
+            // The finish line: what came off the sale, what's left, and the one
+            // tap back to the queue. Nothing here invites a second redemption —
+            // reopening the modal does that, and re-opening adds to the
+            // discount rather than replacing it.
+            <s-stack direction="block" gap="base">
+              <s-banner heading={phase.heading} tone="success">
+                {phase.message}
+              </s-banner>
+              <s-button id="redeem-close" variant="primary" onClick={closeModal}>
+                Back to the sale
+              </s-button>
+            </s-stack>
+          ) : shortBy && info !== undefined ? (
+            // Below the minimum there is nothing to type: a form that refuses
+            // every number is worse than one sentence and the way out.
+            <s-stack direction="block" gap="base">
+              <s-divider />
+              <s-text id="short-of-minimum" color="subdued">
+                {shortOfMinimumLine(view.balance ?? 0, info.minRedemption)}
+              </s-text>
+              <s-button id="redeem-close" variant="primary" onClick={closeModal}>
+                Back to the sale
+              </s-button>
+            </s-stack>
           ) : (
             <>
               <s-divider />
@@ -198,15 +320,21 @@ function Action() {
                 {picks.length > 0 ? (
                   <s-stack direction="block" gap="small-300">
                     <s-text type="strong">How many points?</s-text>
-                    <s-stack direction="inline" gap="small-200">
+                    {/*
+                      One pick per row, not a row of chips: a full-width target
+                      is what a thumb hits first time on a counter-mounted
+                      tablet, and the money fits without truncating.
+                    */}
+                    <s-stack direction="block" gap="small-200">
                       {picks.map((pick) => (
                         <s-button
                           key={pick.points}
                           id={`quick-pick-${pick.label.toLowerCase()}`}
                           variant="secondary"
+                          disabled={phase.name === 'redeeming'}
                           onClick={() => setAmount(pick.points)}
                         >
-                          {`${pick.label} · ${pick.points} pts`}
+                          {quickPickLabel(pick)}
                         </s-button>
                       ))}
                     </s-stack>
@@ -232,10 +360,16 @@ function Action() {
                     setAmount(Number.parseInt(e.currentTarget.value ?? '', 10) || 0);
                   }}
                 ></s-number-field>
-                {preview ? (
-                  <s-text id="redeem-preview" type="strong">
-                    {preview}
-                  </s-text>
+                {/*
+                  The outcome sits directly above the button that acts on it,
+                  so the next tap is the one the banner just asked for — and
+                  the heading names the state, so the tone colour is never
+                  carrying the meaning on its own.
+                */}
+                {phase.name === 'done' ? (
+                  <s-banner heading={phase.heading} tone={phase.tone}>
+                    {phase.message}
+                  </s-banner>
                 ) : null}
                 <s-button
                   id="redeem-submit"
@@ -244,16 +378,8 @@ function Action() {
                   loading={phase.name === 'redeeming'}
                   onClick={onRedeem}
                 >
-                  {points > 0 ? `Redeem ${points} points` : 'Redeem points'}
+                  {redeemActionLabel({ amount: offAmount, retry: retrying })}
                 </s-button>
-                {phase.name === 'done' ? (
-                  <s-banner
-                    heading={phase.tone === 'critical' ? "Couldn't confirm" : 'Not applied'}
-                    tone={phase.tone}
-                  >
-                    {phase.message}
-                  </s-banner>
-                ) : null}
               </s-stack>
             </>
           )}

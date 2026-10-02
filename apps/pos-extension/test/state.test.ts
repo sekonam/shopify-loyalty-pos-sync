@@ -1,16 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CART_WRITE_FAILED,
+  FRESH_FOR_MS,
+  NETWORK_UNCONFIRMED,
   amountIssue,
   balanceView,
+  balanceWorthLine,
   cumulativeDiscount,
   discountValue,
   failedFetch,
   findLoyaltyDiscount,
+  formatAmount,
+  money,
+  quickPickLabel,
   quickPicks,
+  redeemActionLabel,
+  redeemOutcome,
   redeemStatusMessage,
+  shortOfMinimumLine,
 } from '../src/state.js';
 
 const at = new Date('2026-10-01T12:00:00Z');
+/** Treat `at` as a just-now read unless a test is about aging. */
+const justNow = at.getTime();
 
 describe('cart discount accumulation', () => {
   const ours = (description: string, amount: number) => ({
@@ -120,8 +132,10 @@ describe('balanceView — the disable-when-offline rule', () => {
   });
 
   it('only the live state carries a success badge', () => {
-    expect(balanceView({ connection: 'Connected', lastFetch: { ok: true, balance: 1, at } }).badge)
-      .toEqual({ label: 'Up to date', tone: 'success' });
+    expect(
+      balanceView({ connection: 'Connected', lastFetch: { ok: true, balance: 1, at }, now: justNow })
+        .badge,
+    ).toEqual({ label: 'Up to date', tone: 'success' });
     // Loading says nothing at all rather than guessing a status.
     expect(balanceView({ connection: 'Connected', lastFetch: undefined }).badge).toBeUndefined();
     for (const view of [
@@ -131,6 +145,29 @@ describe('balanceView — the disable-when-offline rule', () => {
     ]) {
       expect(view.badge?.tone).toBe('warning');
     }
+  });
+
+  it('stops calling a confirmed balance up to date once it has aged', () => {
+    const old = balanceView({
+      connection: 'Connected',
+      lastFetch: { ok: true, balance: 250, at },
+      now: justNow + FRESH_FOR_MS + 1,
+    });
+    // Still a real, confirmed number — the backend validates the debit itself,
+    // so an aging read must not strand staff with a dead button mid-sale...
+    expect(old).toMatchObject({ kind: 'live', balance: 250, redeemEnabled: true, fresh: false });
+    // ...but it stops claiming to be current, and says what to do about it.
+    expect(old.badge?.tone).toBe('info'); // not the green "Up to date" chip
+    expect(old.badge?.label).toContain('Read at');
+    expect(old.statusLine).toContain('check again');
+
+    const justRead = balanceView({
+      connection: 'Connected',
+      lastFetch: { ok: true, balance: 250, at },
+      now: justNow + FRESH_FOR_MS - 1,
+    });
+    expect(justRead.fresh).toBe(true);
+    expect(justRead.badge?.label).toBe('Up to date');
   });
 });
 
@@ -158,6 +195,66 @@ describe('what points are worth before anyone confirms a redemption', () => {
     // Nothing to offer below the minimum, or with no points at all.
     expect(quickPicks(99, 100)).toEqual([]);
     expect(quickPicks(0, 100)).toEqual([]);
+  });
+
+  it('prices each one-tap amount in the shop currency, right on the control', () => {
+    const picks = quickPicks(1000, 100, { redemptionRate: '100', currency: 'USD' });
+    expect(picks.map(quickPickLabel)).toEqual([
+      '100 points · $1.00 off',
+      'Half · 500 points · $5.00 off',
+      'All 1000 points · $10.00 off',
+    ]);
+    // No currency known yet (a shop with no orders): the bare amount, never a
+    // guessed symbol.
+    expect(quickPickLabel(quickPicks(250, 100, { redemptionRate: '100' })[1]!)).toBe(
+      'All 250 points · 2.50 off',
+    );
+    // Unpriced picks still read as amounts rather than breaking.
+    expect(quickPickLabel({ points: 100, label: 'Minimum' })).toBe('100 points');
+    // A nonsense rate prices nothing rather than printing NaN at a counter.
+    expect(quickPicks(250, 100, { redemptionRate: '0' })[0]?.amount).toBeUndefined();
+  });
+
+  it('floors money to whole cents the way the backend does, and names the currency', () => {
+    // 5 points at 8 points per unit is 0.625: the backend floors to 0.62, so a
+    // button must not promise 0.63.
+    expect(formatAmount(0.625)).toBe('0.62');
+    expect(formatAmount(0.29)).toBe('0.29'); // float dust, not 0.28
+    expect(money('2.50', 'USD')).toBe('$2.50');
+    expect(money(2.5, null)).toBe('2.50');
+    expect(money('2.50', 'NOT-A-CODE')).toBe('2.50'); // never throws at a counter
+    expect(money('not-a-number')).toBe('not-a-number');
+  });
+
+  it('puts the consequence in money on the primary button, and the recovery on a retry', () => {
+    expect(redeemActionLabel({ amount: '$2.50' })).toBe('Take $2.50 off this sale');
+    expect(redeemActionLabel({ amount: '$2.50', retry: true })).toBe(
+      'Try again — take $2.50 off this sale',
+    );
+    // No valid amount yet: the button says what to do, not what it would do.
+    expect(redeemActionLabel({})).toBe('Choose an amount to redeem');
+  });
+
+  it('says how far off a too-small balance is, instead of offering a dead form', () => {
+    expect(shortOfMinimumLine(40, 100)).toBe(
+      '60 more points and this customer can start redeeming.',
+    );
+    expect(shortOfMinimumLine(100, 100)).toContain('0 more points');
+    expect(
+      balanceWorthLine({ balance: 40, minRedemption: 100, maxDiscountAmount: '0.40' }),
+    ).toContain('60 more points');
+    expect(
+      balanceWorthLine({
+        balance: 250,
+        minRedemption: 100,
+        maxDiscountAmount: '2.50',
+        currency: 'USD',
+      }),
+    ).toBe('Worth up to $2.50 off a sale. Tap Redeem loyalty points to use them.');
+    // A real zero reads as intentional, and points nowhere.
+    expect(balanceWorthLine({ balance: 0, minRedemption: 100, maxDiscountAmount: '0.00' })).toBe(
+      'No points yet — they start adding up with the next sale.',
+    );
   });
 
   it('names the problem with an amount, and stays quiet about an untouched field', () => {
@@ -194,5 +291,51 @@ describe('redeemStatusMessage', () => {
     // Every rejection says the customer wasn't charged.
     expect(redeemStatusMessage('rejected_insufficient_balance')).toContain('Nothing was charged');
     expect(redeemStatusMessage('rejected_stale_offline_state')).toContain("can't be taken twice");
+  });
+
+  it('closes the loop on success: what came off the sale, and what is left', () => {
+    const outcome = redeemOutcome('applied', { points: 200, amount: '$2.00', balance: 50 });
+    expect(outcome.tone).toBe('success');
+    // The money is in the heading, so it is the first thing read.
+    expect(outcome.heading).toBe('Done · $2.00 off this sale');
+    expect(outcome.message).toBe('200 points redeemed. $2.00 is off this sale. New balance: 50 points.');
+  });
+
+  it('never claims nothing was charged when the debit actually committed', () => {
+    // Points debited, discount NOT on the sale (POS refused the cart write).
+    const stranded = redeemOutcome(CART_WRITE_FAILED, { points: 200 });
+    expect(stranded.tone).toBe('critical');
+    expect(stranded.heading).toBe('Points taken — discount not applied');
+    expect(stranded.message).toContain('200 points were taken');
+    expect(stranded.message).toContain('did NOT go on this sale');
+    expect(stranded.message).not.toContain('Nothing was charged');
+    expect(stranded.message).not.toContain('nothing was charged');
+    // One next action, then the escalation if it keeps failing.
+    expect(stranded.message).toContain('Tap Try again');
+    expect(stranded.message).toContain('manager');
+
+    // A call that never came back is honestly uncertain — it must not claim
+    // the points are safe, only that a retry cannot take them twice.
+    const unsure = redeemOutcome(NETWORK_UNCONFIRMED);
+    expect(unsure.tone).toBe('critical');
+    expect(unsure.message).not.toContain('othing was charged');
+    expect(unsure.message).toContain("isn't clear whether these points came off");
+    expect(unsure.message).toContain('Tap Try again');
+  });
+
+  it('gives every outcome a heading that carries the meaning without the colour', () => {
+    for (const status of [
+      'applied',
+      'rejected_insufficient_balance',
+      'rejected_below_minimum',
+      'rejected_stale_offline_state',
+      NETWORK_UNCONFIRMED,
+      CART_WRITE_FAILED,
+      'something_new',
+    ]) {
+      const outcome = redeemOutcome(status, { points: 1, amount: '0.01', minRedemption: 100 });
+      expect(outcome.heading.length).toBeGreaterThan(0);
+      expect(outcome.heading).not.toContain('_');
+    }
   });
 });

@@ -18,6 +18,10 @@ const redeemButton = () => document.body.querySelector('#redeem-submit') as HTML
 
 const balanceHeading = () => document.body.querySelector('#loyalty-balance')?.textContent;
 
+/** Banner headings live in an attribute, so they are not in textContent. */
+const bannerHeadings = () =>
+  Array.from(document.body.querySelectorAll('s-banner')).map((b) => b.getAttribute('heading'));
+
 const setPoints = (value: string) => {
   const field = document.body.querySelector('s-number-field') as HTMLElement & { value: string };
   field.value = value;
@@ -72,6 +76,17 @@ describe('redeem action modal', () => {
     expect(balanceHeading()).toBe('50 points');
     // A confident finish: the form is replaced by the outcome.
     expect(redeemButton()).toBeNull();
+    // ...which says what came off the sale and what the customer has left...
+    expect(bannerHeadings()).toContain('Done · 2.00 off this sale');
+    expect(document.body.textContent).toContain('New balance: 50 points');
+    // ...and hands back the one obvious way out, instead of leaving staff
+    // hunting for the modal's close button with a queue waiting.
+    const close = vi.spyOn(window, 'close').mockImplementation(() => undefined);
+    const back = document.body.querySelector('#redeem-close') as HTMLElement;
+    expect(back.textContent).toBe('Back to the sale');
+    fireEvent.click(back);
+    expect(close).toHaveBeenCalledTimes(1);
+    close.mockRestore();
     const redeemCall = (extension.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
       ([input]) => String(input) === '/api/redeem',
     );
@@ -152,23 +167,40 @@ describe('redeem action modal', () => {
     await extension.render();
     await waitFor(() => expect(balanceHeading()).toBe('250 points'));
 
-    // 100 minimum out of 250 available: the minimum and the whole balance.
+    // 100 minimum out of 250 available: the minimum and the whole balance,
+    // each already priced — no points-to-money arithmetic at the counter.
     const picks = Array.from(document.body.querySelectorAll('[id^="quick-pick-"]'));
-    expect(picks.map((p) => p.textContent)).toEqual(['Minimum · 100 pts', 'All · 250 pts']);
+    expect(picks.map((p) => p.textContent)).toEqual([
+      '100 points · 1.00 off',
+      'All 250 points · 2.50 off',
+    ]);
     // The conversion rule is on the field itself, not buried in a tooltip.
     expect(
       document.body.querySelector('s-number-field')?.getAttribute('details'),
     ).toBe('100 points minimum · 100 points = 1.00 off');
 
+    // The button names the consequence in money, not the mechanism.
+    expect(redeemButton().textContent).toBe('Choose an amount to redeem');
     fireEvent.click(picks[1] as HTMLElement);
-    await waitFor(() =>
-      expect(document.body.querySelector('#redeem-preview')?.textContent).toBe(
-        '250 points → 2.50 off this sale',
-      ),
-    );
-    expect(redeemButton().textContent).toBe('Redeem 250 points');
+    await waitFor(() => expect(redeemButton().textContent).toBe('Take 2.50 off this sale'));
     expect(redeemButton().hasAttribute('disabled')).toBe(false);
     expect(extension.fetch).toHaveBeenCalledTimes(1); // nothing written yet
+  });
+
+  it('writes money in the shop currency once the backend knows it', async () => {
+    extension.fetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ ...balancePayload, currency: 'USD' }), { status: 200 }),
+      );
+    await extension.render();
+    await waitFor(() => expect(balanceHeading()).toBe('250 points'));
+    expect(document.body.textContent).toContain('Worth up to $2.50 off this sale');
+    expect(
+      document.body.querySelector('#quick-pick-all')?.textContent,
+    ).toBe('All 250 points · $2.50 off');
+    setPoints('200');
+    await waitFor(() => expect(redeemButton().textContent).toBe('Take $2.00 off this sale'));
   });
 
   it('explains an impossible amount instead of just greying the button out', async () => {
@@ -185,7 +217,8 @@ describe('redeem action modal', () => {
       ),
     );
     expect(redeemButton().hasAttribute('disabled')).toBe(true);
-    expect(document.body.querySelector('#redeem-preview')).toBeNull();
+    // An amount the backend would refuse is never priced on the button.
+    expect(redeemButton().textContent).toBe('Choose an amount to redeem');
 
     setPoints('900');
     await waitFor(() =>
@@ -237,8 +270,10 @@ describe('redeem action modal', () => {
     await waitFor(() => expect(redeemButton().hasAttribute('disabled')).toBe(false));
     fireEvent.click(redeemButton());
     await waitFor(() => {
-      expect(document.body.textContent).toContain("Couldn't confirm the balance");
+      expect(document.body.textContent).toContain("isn't clear whether these points came off");
     });
+    // It must not claim the points are safe — only that a retry can't double.
+    expect(document.body.textContent).not.toContain('othing was charged');
     // The automatic balance re-read re-enables the retry...
     await waitFor(() => expect(redeemButton().hasAttribute('disabled')).toBe(false));
     fireEvent.click(redeemButton());
@@ -246,5 +281,111 @@ describe('redeem action modal', () => {
     // ...and the retry carried the SAME attempt id (idempotent replay).
     expect(redeemAttemptIds).toHaveLength(2);
     expect(redeemAttemptIds[0]).toBe(redeemAttemptIds[1]);
+  });
+
+  it('a debit that lands with a failed cart write never double-debits, and says so honestly', async () => {
+    const redeemAttemptIds: string[] = [];
+    extension.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/balance')) {
+        return new Response(JSON.stringify(balancePayload), { status: 200 });
+      }
+      redeemAttemptIds.push(JSON.parse(init?.body as string).attemptId);
+      // The backend's idempotent replay answers the retry identically.
+      return new Response(
+        JSON.stringify({
+          status: 'applied',
+          balance: 50,
+          discountAmount: '2.00',
+          discountTitle: '200 points redeemed',
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    // POS refuses the cart discount the first time (no open cart, missing
+    // discount permission, API error) and accepts it on the retry.
+    let failApply = true;
+    const applyCartDiscount = vi.fn(async () => {
+      if (failApply) {
+        failApply = false;
+        throw new Error('no open cart');
+      }
+    });
+    extension.shopify.cart.applyCartDiscount = applyCartDiscount;
+
+    await extension.render();
+    await waitFor(() => expect(balanceHeading()).toBe('250 points'));
+    setPoints('200');
+    await waitFor(() => expect(redeemButton().hasAttribute('disabled')).toBe(false));
+    fireEvent.click(redeemButton());
+
+    await waitFor(() =>
+      expect(bannerHeadings()).toContain('Points taken — discount not applied'),
+    );
+    // The ledger debit committed, so the copy must NOT claim otherwise.
+    expect(document.body.textContent).toContain('200 points were taken');
+    expect(document.body.textContent).not.toContain('othing was charged');
+    expect(document.body.textContent).not.toContain("can't be taken twice.");
+    // The amount is locked while the discount is owed: no field to retype and
+    // no quick pick to tap, either of which would mint a second attempt.
+    expect(document.body.querySelector('#points-field')).toBeNull();
+    expect(document.body.querySelector('[id^="quick-pick-"]')).toBeNull();
+
+    // The single next action re-applies the SAME redemption.
+    expect(redeemButton().textContent).toBe('Try again — take 2.00 off this sale');
+    fireEvent.click(redeemButton());
+    await waitFor(() => expect(bannerHeadings()).toContain('Done · 2.00 off this sale'));
+    expect(redeemAttemptIds).toHaveLength(2);
+    expect(redeemAttemptIds[0]).toBe(redeemAttemptIds[1]); // one debit, not two
+    expect(applyCartDiscount).toHaveBeenLastCalledWith(
+      'FixedAmount',
+      'Loyalty points: 200 points redeemed',
+      '2.00',
+    );
+  });
+
+  it('says how far off a too-small balance is instead of offering a form that refuses everything', async () => {
+    extension.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ...balancePayload, balance: 40, maxDiscountAmount: '0.40' }), {
+        status: 200,
+      }),
+    );
+    await extension.render();
+    await waitFor(() => expect(balanceHeading()).toBe('40 points'));
+    expect(document.body.querySelector('#short-of-minimum')?.textContent).toBe(
+      '60 more points and this customer can start redeeming.',
+    );
+    expect(document.body.querySelector('#points-field')).toBeNull();
+    expect(redeemButton()).toBeNull();
+    // Not a dead end: the way back to the sale is on screen.
+    expect(document.body.querySelector('#redeem-close')?.textContent).toBe('Back to the sale');
+  });
+
+  it('offers a re-check when the backend fails on a device that is still online', async () => {
+    let failNext = true;
+    extension.fetch = vi.fn(async () => {
+      if (failNext) {
+        failNext = false;
+        throw new TypeError('backend blip');
+      }
+      return new Response(JSON.stringify(balancePayload), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await extension.render();
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("Can't reach the loyalty service"),
+    );
+    // Without this the screen is a dead end: a disabled button and no refetch
+    // until the device's connectivity happens to change.
+    const recheck = document.body.querySelector('#balance-recheck') as HTMLElement;
+    expect(recheck.textContent).toBe('Check again');
+    fireEvent.click(recheck);
+
+    await waitFor(() => expect(balanceHeading()).toBe('250 points'));
+    await waitFor(() => expect(redeemButton().hasAttribute('disabled')).toBe(true)); // no amount yet
+    setPoints('200');
+    await waitFor(() => expect(redeemButton().hasAttribute('disabled')).toBe(false));
+    // A freshly confirmed balance needs no re-check control.
+    expect(document.body.querySelector('#balance-recheck')).toBeNull();
   });
 });

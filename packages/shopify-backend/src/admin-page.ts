@@ -325,6 +325,23 @@ async function authed(path, init) {
     headers: Object.assign({}, (init && init.headers) || {}, { authorization: 'Bearer ' + token }),
   }));
 }
+/**
+ * Every plain read goes through here. Without the status check a 500 was
+ * parsed as if it were data, and the merchant was shown the resulting
+ * TypeError verbatim — "Cannot read properties of undefined (reading
+ * 'entryCount')" is not a sentence anyone can act on.
+ */
+async function readJson(path) {
+  const res = await authed(path);
+  if (!res.ok) {
+    throw new Error(
+      res.status === 401 || res.status === 403
+        ? 'Your session expired. Reload this page from Shopify admin.'
+        : 'The loyalty service did not answer (error ' + res.status + '). It may be restarting — try again in a moment.',
+    );
+  }
+  return res.json();
+}
 async function putSettings(patch) {
   const res = await authed('/api/settings', {
     method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch),
@@ -408,9 +425,12 @@ function renderOverview(o) {
   state.shopDomain = o.shopDomain;
   state.currency = o.currency;
   state.outstanding = o.stats.outstandingPoints;
-  // The rate examples are money; they are drawn from the settings response,
-  // which can land before this one.
-  if ($('earnRate').value !== '') updateExamples();
+  // The rate examples and the validation messages both quote money; they are
+  // drawn from the settings response, which can land before this one.
+  if ($('earnRate').value !== '') {
+    updateExamples();
+    validateCore();
+  }
   const stats = $('stats');
   stats.textContent = '';
   stats.append(
@@ -620,12 +640,18 @@ const positiveInt = (v) => /^\\d+$/.test(String(v).trim()) && Number(v) > 0;
 const nonNegativeInt = (v) => /^\\d+$/.test(String(v).trim());
 function mark(id, ok) { $(id).setAttribute('aria-invalid', String(!ok)); return ok; }
 
+/** Every problem on the card, not just the first — fixing one at a time and
+ *  re-reading a new message each round is the slow way to learn three rules. */
+function showProblems(id, problems) {
+  $(id).textContent = [...new Set(problems)].join(' ');
+}
 function validateCore() {
   const problems = [];
-  if (!mark('earnRate', positiveDecimal($('earnRate').value))) problems.push('Points earned per 1.00 must be a positive number.');
-  if (!mark('redemptionRate', positiveDecimal($('redemptionRate').value))) problems.push('Points per 1.00 of discount must be a positive number.');
+  const unit = money(1, state.currency);
+  if (!mark('earnRate', positiveDecimal($('earnRate').value))) problems.push('Points earned per ' + unit + ' must be a positive number.');
+  if (!mark('redemptionRate', positiveDecimal($('redemptionRate').value))) problems.push('Points per ' + unit + ' of discount must be a positive number.');
   if (!mark('minRedemption', positiveInt($('minRedemption').value))) problems.push('Minimum redemption must be a whole number above zero.');
-  $('coreError').textContent = problems[0] || '';
+  showProblems('coreError', problems);
   $('saveCore').disabled = problems.length > 0;
   return problems.length === 0;
 }
@@ -639,7 +665,7 @@ function validateRules() {
     field.setAttribute('aria-invalid', String(!ok));
     if (!ok) problems.push(c.label + ' rate must be a positive number, or blank to use the base rate.');
   }
-  $('rulesError').textContent = problems[0] || '';
+  showProblems('rulesError', problems);
   $('saveRules').disabled = problems.length > 0;
   return problems.length === 0;
 }
@@ -675,7 +701,7 @@ function validateTiers() {
     }
     seen.set(row.min, row.name);
   }
-  $('tiersError').textContent = problems[0] || '';
+  showProblems('tiersError', problems);
   $('saveTiers').disabled = problems.length > 0;
   return problems.length === 0;
 }
@@ -683,7 +709,7 @@ function validateReferral() {
   const problems = [];
   if (!mark('refAdvocate', nonNegativeInt($('refAdvocate').value))) problems.push('Referrer reward must be a whole number of points (0 or more).');
   if (!mark('refFriend', nonNegativeInt($('refFriend').value))) problems.push('Welcome bonus must be a whole number of points (0 or more).');
-  $('referralError').textContent = problems[0] || '';
+  showProblems('referralError', problems);
   $('saveReferral').disabled = problems.length > 0;
   return problems.length === 0;
 }
@@ -842,7 +868,9 @@ function parseAwards(text) {
     let error;
     if (parts.length !== 2) error = 'Needs exactly one comma: customer ID,points';
     else if (!/^\\d+$/.test(id)) error = 'Customer ID must be digits';
-    else if (!/^-?\\d+$/.test(pointsText) || points === 0) error = 'Points must be a whole number, not zero';
+    else if (pointsText === '') error = 'Points missing after the comma';
+    else if (!/^-?\\d+$/.test(pointsText)) error = 'Points must be a whole number';
+    else if (points === 0) error = 'Points cannot be zero';
     rows.push({ lineNumber: i + 1, id, points, error });
   }
   return rows;
@@ -888,7 +916,9 @@ function renderAwardPreview() {
   if (!invalid.length) {
     const parts = [];
     if (credited) parts.push(nf.format(credited) + ' points credited');
-    if (deducted) parts.push(nf.format(-deducted) + ' points deducted');
+    // "up to", because a deduction is capped at the customer's balance and
+    // this preview cannot know it — the applied figures come back below.
+    if (deducted) parts.push('up to ' + nf.format(-deducted) + ' points deducted');
     inner.appendChild(el('p', null, parts.join(' · ') + '. This cannot be undone automatically — a mistake has to be corrected with another award.'));
   }
   summary.appendChild(inner);
@@ -938,10 +968,18 @@ $('applyAwards').onclick = async () => {
   const b = el('div', 'banner banner-success');
   const inner = el('div');
   inner.appendChild(el('div', 'banner-title', body.replayed ? 'This batch was already applied' : 'Awards applied'));
-  const list = el('p', null, body.results.map((r) =>
-    r.customerId.replace('gid://shopify/Customer/', '') + ' ' + (r.applied > 0 ? '+' : '') + nf.format(r.applied)
-  ).join(' · '));
-  inner.appendChild(list);
+  const requested = new Map(rows.map((r) => ['gid://shopify/Customer/' + r.id, r.points]));
+  for (const r of body.results) {
+    const id = r.customerId.replace('gid://shopify/Customer/', '');
+    const asked = requested.get(r.customerId);
+    const line = el('p', null,
+      r.applied === 0 && asked !== undefined && asked < 0
+        ? id + ' — nothing deducted, their balance was already zero'
+        : asked !== undefined && asked !== r.applied
+          ? id + ' ' + nf.format(r.applied) + ' — capped at their balance, ' + nf.format(asked) + ' requested'
+          : id + ' ' + (r.applied > 0 ? '+' : '') + nf.format(r.applied));
+    inner.appendChild(line);
+  }
   b.appendChild(inner);
   panel.appendChild(b);
   if (!body.replayed) {
@@ -1074,11 +1112,14 @@ function renderEntries() {
   // Until the first load lands, say so — otherwise the overview render beats
   // the entries request and a busy shop is told it has no activity.
   if (!state.entriesLoaded) {
+    const failed = state.loadFailed === true;
     $('entries-empty').hidden = false;
-    $('entries-empty-title').textContent = 'Loading…';
-    $('entries-empty-body').textContent = '';
+    $('entries-empty-title').textContent = failed ? 'Could not load the ledger' : 'Loading…';
+    $('entries-empty-body').textContent = failed
+      ? 'The entries are safe — this page could not read them. Use Try again above.'
+      : '';
     $('recent-empty').hidden = false;
-    $('recent-empty').querySelector('.empty-title').textContent = 'Loading…';
+    $('recent-empty').querySelector('.empty-title').textContent = failed ? 'Could not load activity' : 'Loading…';
     document.querySelector('#entries thead').hidden = true;
     document.querySelector('#recent thead').hidden = true;
     $('ledger-count').textContent = '';
@@ -1095,20 +1136,34 @@ function renderEntries() {
   $('entries-empty-title').textContent = fresh ? 'No points activity yet' : 'Nothing matches';
   $('entries-empty-body').textContent = fresh
     ? 'Every earn, redemption, and refund reversal will be listed here as it happens.'
-    : 'Try a different reason or channel.';
+    : state.lookup
+      ? 'This customer has ' + nf.format(state.entries.length) + ' entries, but none of them match the reason and channel filters above.'
+      : 'Try a different reason or channel.';
   $('loadMore').hidden = rows.length <= state.shown;
   $('shown-count').textContent = rows.length
     ? 'Showing ' + Math.min(state.shown, rows.length) + ' of ' + nf.format(rows.length)
     : '';
   const total = Math.max(state.totalEntries, state.entries.length);
   const lookedUp = state.lookup ? nameFor(state.lookup.customerId) : undefined;
+  const who = state.lookup
+    ? lookedUp
+      ? lookedUp.displayName
+      : 'customer ' + state.lookup.raw
+    : '';
   $('ledger-count').textContent = state.lookup
-    ? 'Every entry for ' + (lookedUp ? lookedUp.displayName : 'customer ' + state.lookup.raw) + ', newest first.'
+    // A reason or channel filter left over from before the lookup narrows the
+    // table silently. Saying "every entry" over a table hiding most of them —
+    // or, with nothing matching, over an empty one — is simply untrue.
+    ? rows.length !== state.entries.length
+      ? nf.format(rows.length) + ' of ' + nf.format(state.entries.length) + ' entries for ' + who + ' match the filters, newest first.'
+      : 'Every entry for ' + who + ', newest first.'
     : fresh
       ? 'Nothing recorded yet.'
-      : total > state.entries.length
-        ? nf.format(total) + ' entries. Showing the most recent ' + nf.format(state.entries.length) + ', newest first.'
-        : nf.format(total) + ' entries, newest first.';
+      : rows.length !== state.entries.length
+        ? nf.format(rows.length) + ' of ' + nf.format(total) + ' entries match, newest first.'
+        : total > state.entries.length
+          ? nf.format(total) + ' entries. Showing the most recent ' + nf.format(state.entries.length) + ', newest first.'
+          : nf.format(total) + ' entries, newest first.';
 
   const recent = document.querySelector('#recent tbody');
   recent.textContent = '';
@@ -1204,8 +1259,8 @@ async function lookupById(raw) {
   busy($('lookup-go'), true, 'Looking up…');
   try {
     const [balance, entries] = await Promise.all([
-      (await authed('/api/balance?customerId=' + q)).json(),
-      (await authed('/api/entries?customerId=' + q)).json(),
+      readJson('/api/balance?customerId=' + q),
+      readJson('/api/entries?customerId=' + q),
     ]);
     // Authoritative for this customer: their whole history, not the recent window.
     state.entries = entries.entries.slice().reverse();
@@ -1254,12 +1309,21 @@ function renderLookup(balance, entryCount) {
     who.appendChild(el('div', 'field-help', known.email ? known.email + ' · ' + state.lookup.raw : 'Customer ' + state.lookup.raw));
     panel.appendChild(who);
   }
+  // earned365 is sent for every shop; reading it off the tier object meant a
+  // shop with no tiers configured — the default — showed a flat 0 under the
+  // label "Points earned (365 days)", which was simply false.
+  const earned365 = nf.format(balance.earned365 ?? (balance.tier ? balance.tier.earned365 : 0));
+  const named = balance.tier && balance.tier.name;
   grid.append(
     tile('Points balance', nf.format(balance.balance), 'Worth ' + money(balance.maxDiscountAmount, state.currency)),
     tile(
-      balance.tier && balance.tier.name ? 'Tier' : 'Points earned (365 days)',
-      balance.tier && balance.tier.name ? balance.tier.name : nf.format(balance.tier ? balance.tier.earned365 : 0),
-      balance.tier && balance.tier.name ? nf.format(balance.tier.earned365) + ' earned in 365 days' : 'No tier reached',
+      named ? 'Tier' : 'Points earned (365 days)',
+      named ? balance.tier.name : earned365,
+      named
+        ? earned365 + ' earned in 365 days'
+        : balance.tier
+          ? 'No tier reached yet'
+          : 'This shop runs no VIP tiers',
     ),
     tile('Ledger entries', nf.format(entryCount), 'All time'),
   );
@@ -1336,7 +1400,7 @@ $('export').onclick = async () => {
 
 /* ---------- load ---------- */
 async function loadEntries() {
-  const { entries } = await (await authed('/api/entries?limit=' + LEDGER_WINDOW)).json();
+  const { entries } = await readJson('/api/entries?limit=' + LEDGER_WINDOW);
   state.entries = entries.slice().reverse();
   state.entriesLoaded = true;
   state.lookup = null;
@@ -1345,29 +1409,50 @@ async function loadEntries() {
   await fillVisibleNames();
 }
 async function refreshOverview() {
-  const overview = await (await authed('/api/overview')).json();
+  const overview = await readJson('/api/overview');
   state.totalEntries = overview.stats.entryCount;
   renderOverview(overview);
   renderEntries();
 }
 async function load() {
   $('load-error').hidden = true;
-  try {
-    const [settings] = await Promise.all([
-      (await authed('/api/settings')).json(),
-      refreshOverview(),
-      loadEntries(),
-    ]);
-    renderSettings(settings);
-  } catch (err) {
+  state.loadFailed = false;
+  // Settled, not all: the three reads are independent, and losing the ledger
+  // is no reason to blank the Program tab the merchant came to edit.
+  const [settings, overview, entries] = await Promise.allSettled([
+    readJson('/api/settings'),
+    refreshOverview(),
+    loadEntries(),
+  ]);
+  if (settings.status === 'fulfilled') renderSettings(settings.value);
+  // Nothing rendered the cards, so nothing has validated them either: a blank
+  // card must never offer a Save that would write blanks over real settings.
+  else validateAll();
+  const failures = [settings, overview, entries].filter((r) => r.status === 'rejected');
+  if (failures.length > 0) {
+    const err = failures[0].reason;
     const panel = $('load-error');
     panel.hidden = false;
     panel.textContent = '';
     const b = el('div', 'banner banner-critical');
     const inner = el('div');
-    inner.append(el('div', 'banner-title', 'Could not load your loyalty data'), el('p', null, String(err && err.message ? err.message : err)));
+    inner.append(
+      el('div', 'banner-title', 'Could not load your loyalty data'),
+      el('p', null, String(err && err.message ? err.message : err)),
+      el('p', null, 'No points have been lost — this page could not read them. The ledger itself is unaffected.'),
+    );
+    const retry = el('button', 'btn btn-sm', 'Try again');
+    retry.type = 'button';
+    retry.onclick = () => void doRefresh();
+    inner.appendChild(retry);
     b.appendChild(inner);
     panel.appendChild(b);
+    // Otherwise both tables sit on "Loading…" for ever, which reads as a slow
+    // page rather than a failed one.
+    if (!state.entriesLoaded) {
+      state.loadFailed = true;
+      renderEntries();
+    }
   }
 }
 async function doRefresh() {
@@ -1407,6 +1492,10 @@ $('refresh').onclick = () => {
   return undefined;
 };
 
+window.addEventListener('hashchange', () => {
+  const next = location.hash.slice(1);
+  if (TABS.includes(next)) showTab(next);
+});
 showTab(TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview');
 load();
 </script>

@@ -154,8 +154,14 @@ describe('GraphqlCustomerDirectory', () => {
       );
     }) as unknown as typeof fetch;
     const dir = new GraphqlCustomerDirectory(tokens, impl);
-    for (let i = 0; i < 5200; i++) await dir.lookup(SHOP, [gid(String(i))]);
-    expect(cacheSize(dir)).toBeLessThanOrEqual(5000);
+    // One call with every id, not 5200 sequential ones: the directory batches
+    // internally, so this exercises the same eviction path in a fraction of
+    // the time — a slow test here was flaking under parallel load.
+    const ids = Array.from({ length: 5200 }, (_, i) => gid(String(i)));
+    await dir.lookup(SHOP, ids);
+    expect(cacheSize(dir)).toBe(5000);
+    // The oldest ids went first, the newest are still there.
+    expect(await dir.lookup(SHOP, [gid('5199')])).toHaveLength(1);
   });
 
   it('searches Shopify customers by free text', async () => {

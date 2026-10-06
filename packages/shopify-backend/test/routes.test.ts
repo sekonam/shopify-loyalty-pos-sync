@@ -132,9 +132,24 @@ describe('GET /api/balance', () => {
       redemptionRate: '100',
       currency: 'USD',
       tier: null,
+      // Sent even with no tiers configured: the admin shows this figure for
+      // every customer, and deriving it from `tier` meant a no-tier shop was
+      // shown a flat 0 under the label "Points earned (365 days)".
+      earned365: 250,
       referralEligible: null,
       maxDiscountAmount: '2.50',
     });
+  });
+
+  it('reports points earned in the window even when the shop runs no tiers', async () => {
+    const { app, deps } = makeApp();
+    await app.request(webhookRequest('orders/paid', paidOrder({ total_price: '250.00' })));
+    expect((await deps.settings.get(SHOP)).tiers ?? []).toEqual([]);
+    const body = (await (
+      await app.request(await authed(`/balance?customerId=${encodeURIComponent(CUSTOMER)}`))
+    ).json()) as { tier: unknown; earned365: number };
+    expect(body.tier).toBeNull();
+    expect(body.earned365).toBe(250);
   });
 });
 

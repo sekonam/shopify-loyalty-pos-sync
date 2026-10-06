@@ -322,6 +322,14 @@ code { font-family: var(--font-mono); font-size: 12px; }
 @media (max-width: 768px), (pointer: coarse) {
   .btn { min-height: 44px; padding: 10px 16px; }
   .input { min-height: 44px; }
+  /*
+   * The .input rule above does not reach a checkbox: it carries its own 16px
+   * box, and its label row was only 22px tall — half the minimum target, on
+   * the controls that switch earning on and off per channel. The label is the
+   * target, so it is the thing that has to be big enough.
+   */
+  .checkbox { min-height: 44px; }
+  .checkbox input { width: 20px; height: 20px; }
 }
 @media (max-width: 600px) {
   .pair { grid-template-columns: 1fr; gap: var(--space-2); }

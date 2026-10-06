@@ -171,13 +171,16 @@ export function createApp(deps: AppDeps): Hono<Env> {
     if (tokenKind(c.get('tokenSub')) === 'customer' && settings.referral?.enabled) {
       referralEligible = !(await deps.ledger.hasEarnFromOtherOrder(shopDomain, customerId, ''));
     }
+    // Computed whether or not the shop runs tiers: the admin shows "points
+    // earned in 365 days" for every customer, and a shop with no tiers was
+    // being shown a flat 0 for it — a false number under an accurate label.
+    const earned365 = await deps.ledger.earnedSince(
+      shopDomain,
+      customerId,
+      new Date(Date.now() - TIER_WINDOW_MS),
+    );
     let tier: { name: string; multiplier: string; earned365: number } | null = null;
     if (settings.tiers?.length) {
-      const earned365 = await deps.ledger.earnedSince(
-        shopDomain,
-        customerId,
-        new Date(Date.now() - TIER_WINDOW_MS),
-      );
       const t = selectTier(settings.tiers, earned365);
       tier = t ? { name: t.name, multiplier: t.multiplier, earned365 } : { name: '', multiplier: '1', earned365 };
     }
@@ -190,6 +193,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
       // redemption in a different presentment currency (v1 single-currency).
       currency: settings.currency ?? null,
       tier,
+      earned365,
       referralEligible,
       maxDiscountAmount: redemptionDiscountAmount(
         Math.max(balance, 0),

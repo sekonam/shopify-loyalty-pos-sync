@@ -139,14 +139,27 @@ const verdict = document.getElementById('verdict');
 const statusBadge = document.getElementById('status-badge');
 const gid = () => 'gid://shopify/Customer/' + document.getElementById('customer').value.trim();
 const pts = () => Number(document.getElementById('points').value);
-function show(label, status, body, good) {
+function show(label, status, body, good, note) {
   out.textContent = JSON.stringify(body, null, 2);
   verdict.textContent = label;
   statusBadge.textContent = '';
   const badge = document.createElement('span');
   badge.className = 'badge ' + (good ? 'badge-success' : 'badge-critical');
-  badge.textContent = 'HTTP ' + status + (good ? ' · as expected' : ' · unexpected');
+  badge.textContent = 'HTTP ' + status + (note || (good ? ' · as expected' : ' · unexpected'));
   statusBadge.appendChild(badge);
+}
+/*
+ * A redemption the rules refuse — below the minimum, more points than the
+ * customer has — answers 409 and is the backend working, not failing. Marking
+ * it red "unexpected" would teach whoever runs the dev-store spikes to
+ * distrust exactly the behaviour they are there to confirm.
+ */
+function redemptionVerdict(res, body) {
+  if (res.ok) return { good: true };
+  if (res.status === 409 && typeof body.status === 'string' && body.status.indexOf('rejected_') === 0) {
+    return { good: true, note: ' · refused by the rules, as it should be' };
+  }
+  return { good: false };
 }
 async function token(kind) {
   const q = kind === 'customer' ? '?kind=customer&customerId=' + encodeURIComponent(gid()) : '?kind=' + kind;
@@ -160,7 +173,9 @@ async function call(label, kind, path, init, expectOk) {
       headers: Object.assign({}, (init && init.headers) || {}, { authorization: 'Bearer ' + t }),
     }));
     const body = await res.json().catch(() => ({}));
-    show(label, res.status, body, expectOk ? res.ok : !res.ok);
+    const v =
+      typeof expectOk === 'function' ? expectOk(res, body) : { good: expectOk ? res.ok : !res.ok };
+    show(label, res.status, body, v.good, v.note);
   } catch (err) {
     show(label, 'ERR', String(err), false);
   }
@@ -176,13 +191,13 @@ document.getElementById('redeem-web').onclick = () =>
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ points: pts(), attemptId: crypto.randomUUID(), channel: 'web' }),
-  }, true);
+  }, redemptionVerdict);
 document.getElementById('redeem-pos').onclick = () =>
   call('Redeem at POS, staff token', 'staff', '/api/redeem', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ customerId: gid(), points: pts(), attemptId: crypto.randomUUID(), channel: 'pos' }),
-  }, true);
+  }, redemptionVerdict);
 document.getElementById('forbidden').onclick = () =>
   call('Settings with a shopper token — must be refused', 'customer', '/api/settings', {}, false);
 </script>

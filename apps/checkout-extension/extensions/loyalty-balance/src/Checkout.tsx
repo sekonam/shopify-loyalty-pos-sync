@@ -59,7 +59,12 @@ function money(amount: string | number, currency?: string | null): string {
   const code = currency ?? presentmentCurrency();
   if (code) {
     try {
-      return new Intl.NumberFormat(undefined, { style: 'currency', currency: code }).format(floored);
+      return new Intl.NumberFormat(undefined, {
+        style: 'currency',
+        currency: code,
+        // Match the storefront's own money: "$45.00", not "US$45.00".
+        currencyDisplay: 'narrowSymbol',
+      }).format(floored);
     } catch {
       // Unknown currency code — fall through to the plain amount.
     }

@@ -136,6 +136,12 @@ body {
 .grid { display: grid; gap: var(--space-4); }
 .grid-stats { grid-template-columns: repeat(auto-fit, minmax(176px, 1fr)); }
 .grid-2 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+/*
+ * A label and the one field that configures it. The channel rules used a
+ * row-end spacer instead, which pushed each rate input to the far edge of the
+ * card — about 500px from the channel it belonged to.
+ */
+.pair { display: grid; grid-template-columns: minmax(0, 1fr) 140px; align-items: center; gap: var(--space-3); max-width: 420px; }
 
 /* ---------- tabs ---------- */
 .tabs { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--border); margin-bottom: var(--space-5); }
@@ -184,6 +190,14 @@ body {
 .btn-primary { background: var(--primary-bg); color: var(--primary-text); box-shadow: var(--shadow-button-primary); }
 .btn-primary:hover:not(:disabled), .btn-primary:active:not(:disabled) { background: var(--primary-bg-hover); }
 .btn-primary:disabled { background: rgba(0,0,0,.17); color: #fff; }
+/*
+ * Small variant for in-card and in-row actions, so a row action does not
+ * carry the same visual weight as a card's primary Save. Declared before the
+ * touch media query at the end of the file on purpose: on a coarse pointer
+ * the .btn rule there has equal specificity and comes later, so a small
+ * button still gets a 44px tap target.
+ */
+.btn-sm { min-height: 24px; padding: 2px 8px; }
 .btn-plain { background: none; box-shadow: none; color: var(--text-link); }
 .btn-plain:hover:not(:disabled) { background: var(--surface-hover); }
 .btn-critical { color: var(--critical-text); }
@@ -212,6 +226,7 @@ body {
 .input[aria-invalid="true"] { background: var(--critical-surface); box-shadow: inset 0 0 0 1px var(--critical-text); }
 .input-sm { max-width: 120px; }
 .input-md { max-width: 220px; }
+.input-lg { width: 320px; max-width: 100%; }
 textarea.input { min-height: 84px; resize: vertical; font-family: var(--font-mono); font-size: 12px; }
 select.input { padding-right: var(--space-2); }
 
@@ -255,10 +270,23 @@ table.data td { padding: var(--space-2) var(--space-3); font-size: 12px; line-he
 table.data tbody tr:hover { background: var(--surface-hover); }
 table.data tbody tr:last-child td { border-bottom: 0; }
 td.num { text-align: end; font-variant-numeric: tabular-nums; font-weight: 550; }
+/*
+ * Credits read green; debits deliberately do NOT read red. A redemption is
+ * the program working, not an error, and the Reason badge already names it —
+ * so the pair is sign plus weight, and critical red stays reserved for
+ * something actually wrong.
+ */
 .delta-pos { color: var(--success-text); }
+.delta-neg { color: var(--text); }
 .mono { font-family: var(--font-mono); font-size: 12px; color: var(--text-subdued); }
 a.mono { color: var(--text-link); text-decoration: none; }
 a.mono:hover { text-decoration: underline; }
+/*
+ * A mono button is still a link. The .mono rule is declared above with equal
+ * specificity, so it was repainting .btn-plain's link colour as subdued body
+ * text — the clickable customer ids in the ledger read as inert text.
+ */
+.btn-plain.mono { color: var(--text-link); }
 
 /* ---------- misc ---------- */
 .empty { padding: var(--space-10) var(--space-4); text-align: center; color: var(--text-subdued); }
@@ -283,6 +311,7 @@ code { font-family: var(--font-mono); font-size: 12px; }
   .input { min-height: 44px; }
 }
 @media (max-width: 600px) {
+  .pair { grid-template-columns: 1fr; gap: var(--space-2); }
   .page { padding: var(--space-3) var(--space-3) var(--space-8); }
   .card-header, .card-body { padding-inline: var(--space-3); }
 }

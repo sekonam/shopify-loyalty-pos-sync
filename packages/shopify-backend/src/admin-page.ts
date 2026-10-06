@@ -61,7 +61,10 @@ ${faviconLink()}
         <h2 class="card-title">Recent activity</h2>
         <p class="card-description">The newest entries in the points ledger.</p>
       </div><div class="row-end"><button class="btn btn-plain btn-sm" type="button" data-goto="ledger">View all</button></div></div>
-      <div class="table-wrap"><table class="data" id="recent"><tbody></tbody></table></div>
+      <div class="table-wrap"><table class="data" id="recent">
+        <thead><tr><th>When</th><th>Customer</th><th class="num">Change</th><th>Reason</th><th>Channel</th><th>Order</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
       <div id="recent-empty" class="empty" hidden>
         <div class="empty-title">No points activity yet</div>
         <div>Points appear here the moment an order is paid — online or at the register.</div>
@@ -79,12 +82,12 @@ ${faviconLink()}
       <div class="card-body">
         <div class="grid grid-2">
           <div class="field">
-            <label class="field-label" for="earnRate">Points earned per 1.00 spent</label>
+            <label class="field-label" for="earnRate">Points earned per <span id="earn-unit">1.00</span> spent</label>
             <input class="input input-sm" id="earnRate" inputmode="decimal" aria-describedby="earnRate-help" />
-            <span class="field-help" id="earnRate-help">A 50.00 order earns <span id="earn-example">50</span> points.</span>
+            <span class="field-help" id="earnRate-help">A <span id="earn-order-example">50.00</span> order earns <span id="earn-example">50</span> points.</span>
           </div>
           <div class="field">
-            <label class="field-label" for="redemptionRate">Points per 1.00 of discount</label>
+            <label class="field-label" for="redemptionRate">Points per <span id="redeem-unit">1.00</span> of discount</label>
             <input class="input input-sm" id="redemptionRate" inputmode="decimal" aria-describedby="redemptionRate-help" />
             <span class="field-help" id="redemptionRate-help">500 points is worth <span id="redeem-example">5.00</span> off.</span>
           </div>
@@ -185,7 +188,7 @@ ${faviconLink()}
         <div class="row">
           <div class="field">
             <label class="visually-hidden" for="lookup-id">Customer ID</label>
-            <input class="input input-md" id="lookup-id" type="search" placeholder="Customer ID, e.g. 6123456789"
+            <input class="input input-lg" id="lookup-id" type="search" placeholder="Customer ID, e.g. 6123456789"
                    aria-describedby="lookup-help" />
           </div>
           <button class="btn btn-primary" id="lookup-go" type="button">Look up</button>
@@ -290,7 +293,9 @@ function money(amount, currency) {
   if (!Number.isFinite(value)) return String(amount);
   if (currency) {
     try {
-      return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(value);
+      return new Intl.NumberFormat(undefined, {
+        style: 'currency', currency, currencyDisplay: 'narrowSymbol',
+      }).format(value);
     } catch (err) {
       // Unknown currency code — fall through to the plain amount.
     }
@@ -398,6 +403,9 @@ function renderOverview(o) {
   state.shopDomain = o.shopDomain;
   state.currency = o.currency;
   state.outstanding = o.stats.outstandingPoints;
+  // The rate examples are money; they are drawn from the settings response,
+  // which can land before this one.
+  if ($('earnRate').value !== '') updateExamples();
   const stats = $('stats');
   stats.textContent = '';
   stats.append(
@@ -490,7 +498,7 @@ function renderOverview(o) {
 
 /* ---------- program ---------- */
 function channelRow(channel, rule) {
-  const row = el('div', 'row');
+  const row = el('div', 'pair');
   const label = el('label', 'checkbox');
   const box = document.createElement('input');
   box.type = 'checkbox';
@@ -503,7 +511,7 @@ function channelRow(channel, rule) {
   rate.placeholder = 'base rate';
   rate.value = (rule && rule.earnRate) || '';
   rate.setAttribute('aria-label', channel.label + ' earn rate');
-  row.append(label, el('span', 'row-end'), rate);
+  row.append(label, rate);
   return row;
 }
 function tierRow(tier) {
@@ -586,8 +594,14 @@ function renderSettings(s) {
 function updateExamples() {
   const earn = Number($('earnRate').value);
   const redeem = Number($('redemptionRate').value);
+  const unit = money(1, state.currency);
+  $('earn-unit').textContent = unit;
+  $('redeem-unit').textContent = unit;
+  $('earn-order-example').textContent = money(50, state.currency);
   $('earn-example').textContent = Number.isFinite(earn) && earn > 0 ? nf.format(Math.floor(50 * earn)) : '—';
-  $('redeem-example').textContent = Number.isFinite(redeem) && redeem > 0 ? (500 / redeem).toFixed(2) : '—';
+  $('redeem-example').textContent = Number.isFinite(redeem) && redeem > 0
+    ? money((500 / redeem).toFixed(2), state.currency)
+    : '—';
 }
 $('earnRate').addEventListener('input', updateExamples);
 $('redemptionRate').addEventListener('input', updateExamples);
@@ -998,6 +1012,8 @@ function renderEntries() {
     $('entries-empty-body').textContent = '';
     $('recent-empty').hidden = false;
     $('recent-empty').querySelector('.empty-title').textContent = 'Loading…';
+    document.querySelector('#entries thead').hidden = true;
+    document.querySelector('#recent thead').hidden = true;
     $('ledger-count').textContent = '';
     return;
   }
@@ -1006,6 +1022,7 @@ function renderEntries() {
   tbody.textContent = '';
   for (const e of rows.slice(0, state.shown)) tbody.appendChild(entryRow(e));
   $('entries-empty').hidden = rows.length > 0;
+  document.querySelector('#entries thead').hidden = rows.length === 0;
   // A shop with no entries at all is a new install, not a failed search.
   const fresh = state.entries.length === 0 && !state.lookup;
   $('entries-empty-title').textContent = fresh ? 'No points activity yet' : 'Nothing matches';
@@ -1029,6 +1046,7 @@ function renderEntries() {
   recent.textContent = '';
   for (const e of state.entries.slice(0, 6)) recent.appendChild(entryRow(e));
   $('recent-empty').hidden = state.entries.length > 0;
+  document.querySelector('#recent thead').hidden = state.entries.length === 0;
   $('recent-empty').querySelector('.empty-title').textContent = 'No points activity yet';
 }
 for (const id of ['filter-reason', 'filter-channel']) {
@@ -1144,14 +1162,28 @@ $('export').onclick = async () => {
   if ($('filter-reason').value) params.set('reason', $('filter-reason').value);
   if ($('filter-channel').value) params.set('channel', $('filter-channel').value);
   const query = params.toString();
-  const res = await authed('/api/ledger.csv' + (query ? '?' + query : ''));
-  const blob = await res.blob();
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'points-ledger.csv';
-  a.click();
-  URL.revokeObjectURL(a.href);
-  toast(query ? 'CSV downloaded for this view' : 'CSV downloaded');
+  busy($('export'), true, 'Preparing…');
+  try {
+    const res = await authed('/api/ledger.csv' + (query ? '?' + query : ''));
+    // Without this, an expired session or a server error is saved as
+    // points-ledger.csv containing a JSON error body — and announced as a
+    // successful download. A merchant finds out at reconciliation time.
+    if (!res.ok) {
+      toast('Could not download the CSV. Refresh and try again.', 'critical');
+      return;
+    }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'points-ledger.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast(query ? 'CSV downloaded for this view' : 'CSV downloaded');
+  } catch (err) {
+    toast('Could not download the CSV. Check your connection and try again.', 'critical');
+  } finally {
+    busy($('export'), false, 'Download CSV');
+  }
 };
 
 /* ---------- load ---------- */

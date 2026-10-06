@@ -142,7 +142,12 @@ export function money(amount: string | number, currency?: string | null | undefi
   const floored = Math.floor(value * 100 + 1e-6) / 100;
   if (currency) {
     try {
-      return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(floored);
+      return new Intl.NumberFormat(undefined, {
+        style: 'currency',
+        currency,
+        // Match the storefront's own money: "$45.00", not "US$45.00".
+        currencyDisplay: 'narrowSymbol',
+      }).format(floored);
     } catch {
       // Unknown currency code — fall through to the bare amount.
     }

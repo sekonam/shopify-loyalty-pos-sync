@@ -188,13 +188,13 @@ ${faviconLink()}
         <div class="row">
           <div class="field">
             <label class="visually-hidden" for="lookup-id">Customer ID</label>
-            <input class="input input-lg" id="lookup-id" type="search" placeholder="Customer ID, e.g. 6123456789"
+            <input class="input input-lg" id="lookup-id" type="search" placeholder="Name, email, or customer ID"
                    aria-describedby="lookup-help" />
           </div>
           <button class="btn btn-primary" id="lookup-go" type="button">Look up</button>
           <button class="btn btn-plain" id="lookup-clear" type="button" hidden>Back to all entries</button>
         </div>
-        <span class="field-help" id="lookup-help">Find the ID in the customer's Shopify admin URL, or click any customer in the ledger below.</span>
+        <span class="field-help" id="lookup-help">Search your Shopify customers by name or email, or click any customer in the ledger below.</span>
         <div id="lookup-result"></div>
       </div>
     </div>
@@ -305,6 +305,9 @@ function money(amount, currency) {
 let state = {
   entries: [], shown: PAGE_SIZE, shopDomain: null, currency: null, settings: null,
   totalEntries: 0, lookup: null, outstanding: 0, entriesLoaded: false,
+  // customerId -> { displayName, email }. Resolved from Shopify at read time
+  // and never stored: names are Shopify's record, not this app's.
+  names: new Map(), namesAvailable: null,
 };
 
 /* ---------- plumbing ---------- */
@@ -949,15 +952,62 @@ $('applyAwards').onclick = async () => {
   loadEntries(); refreshOverview();
 };
 
+/* ---------- customer names ----------
+ * The ledger stores customer gids, which is correct — but a merchant reading
+ * "6123456789 +89 Earned POS" has been handed a join to do by hand. Names are
+ * fetched for the rows actually on screen, in one call, and the page stays
+ * entirely usable when they can't be (no Admin token yet, API down): it falls
+ * back to the id it has always shown.
+ */
+function nameFor(customerId) {
+  return state.names.get(customerId);
+}
+async function resolveNames(customerIds) {
+  const missing = [...new Set(customerIds)].filter((id) => !state.names.has(id));
+  if (missing.length === 0 || state.namesAvailable === false) return false;
+  try {
+    const res = await authed('/api/customers?ids=' + encodeURIComponent(missing.join(',')));
+    const body = await res.json();
+    state.namesAvailable = body.available === true;
+    if (!state.namesAvailable) return false;
+    for (const c of body.customers) state.names.set(c.id, c);
+    // Ids Shopify didn't return (deleted, redacted) are remembered as absent
+    // so the page doesn't ask again on every render.
+    for (const id of missing) if (!state.names.has(id)) state.names.set(id, null);
+    return true;
+  } catch (err) {
+    state.namesAvailable = false;
+    return false;
+  }
+}
+/** Names for the rows currently drawn, then one re-render with them in. */
+async function fillVisibleNames() {
+  const rows = state.lookup ? state.entries : filtered();
+  // The overview's Recent activity draws the newest six regardless of the
+  // ledger filters, so those ids are asked for too.
+  const ids = rows.slice(0, state.shown).concat(state.entries.slice(0, 6)).map((e) => e.customerId);
+  if (await resolveNames(ids)) renderEntries();
+}
+
 /* ---------- ledger ---------- */
 // Drilling into a customer is the common follow-up from a ledger row, so the
 // id is an in-app action; the external Shopify link lives on the detail card.
 function customerCell(customerId) {
   const num = customerId.replace('gid://shopify/Customer/', '');
   if (!/^\\d+$/.test(num)) return el('span', 'mono', num);
-  const button = el('button', 'btn btn-plain btn-sm mono', num);
+  const known = nameFor(customerId);
+  const button = el('button', 'btn btn-plain btn-sm' + (known ? ' btn-stacked' : ' mono'));
   button.type = 'button';
-  button.setAttribute('aria-label', 'Look up customer ' + num);
+  if (known) {
+    button.append(el('span', null, known.displayName));
+    // The id still has to be reachable — it is what a Shopify admin URL and a
+    // support conversation are keyed on — just not the headline.
+    button.append(el('span', 'mono', known.email || num));
+    button.setAttribute('aria-label', 'Look up ' + known.displayName);
+  } else {
+    button.textContent = num;
+    button.setAttribute('aria-label', 'Look up customer ' + num);
+  }
   button.onclick = () => {
     $('lookup-id').value = num;
     lookupCustomer();
@@ -1034,8 +1084,9 @@ function renderEntries() {
     ? 'Showing ' + Math.min(state.shown, rows.length) + ' of ' + nf.format(rows.length)
     : '';
   const total = Math.max(state.totalEntries, state.entries.length);
+  const lookedUp = state.lookup ? nameFor(state.lookup.customerId) : undefined;
   $('ledger-count').textContent = state.lookup
-    ? 'Every entry for customer ' + state.lookup.raw + ', newest first.'
+    ? 'Every entry for ' + (lookedUp ? lookedUp.displayName : 'customer ' + state.lookup.raw) + ', newest first.'
     : fresh
       ? 'Nothing recorded yet.'
       : total > state.entries.length
@@ -1050,20 +1101,79 @@ function renderEntries() {
   $('recent-empty').querySelector('.empty-title').textContent = 'No points activity yet';
 }
 for (const id of ['filter-reason', 'filter-channel']) {
-  $(id).addEventListener('input', () => { state.shown = PAGE_SIZE; renderEntries(); });
+  $(id).addEventListener('input', () => { state.shown = PAGE_SIZE; renderEntries(); void fillVisibleNames(); });
 }
 
 /* ---------- customer lookup ---------- */
+function warn(panel, title, detail) {
+  const b = el('div', 'banner banner-warning');
+  const inner = el('div');
+  inner.appendChild(el('div', 'banner-title', title));
+  if (detail) inner.appendChild(el('p', null, detail));
+  b.appendChild(inner);
+  panel.appendChild(b);
+}
+/**
+ * A merchant knows a name or an email; they do not know a ten-digit customer
+ * id, and asking them to dig one out of a Shopify URL was the slowest step in
+ * the one task this card exists for. Digits still go straight through.
+ */
 async function lookupCustomer() {
   const raw = $('lookup-id').value.trim().replace('gid://shopify/Customer/', '');
   const panel = $('lookup-result');
   panel.textContent = '';
-  if (!/^\\d+$/.test(raw)) {
-    const b = el('div', 'banner banner-warning');
-    b.appendChild(el('div', 'banner-title', 'Enter a numeric customer ID, like 6123456789.'));
-    panel.appendChild(b);
+  if (raw === '') {
+    warn(panel, 'Enter a name, an email address, or a customer ID.');
     return;
   }
+  if (/^\\d+$/.test(raw)) return lookupById(raw);
+  return searchCustomers(raw);
+}
+async function searchCustomers(query) {
+  const panel = $('lookup-result');
+  busy($('lookup-go'), true, 'Searching…');
+  try {
+    const res = await authed('/api/customers/search?q=' + encodeURIComponent(query));
+    const body = await res.json();
+    if (!body.available) {
+      warn(panel, 'Search needs a connection to Shopify',
+        'Until this app is installed on the store and can reach the Admin API, look customers up by their numeric ID instead.');
+      return;
+    }
+    if (body.customers.length === 0) {
+      warn(panel, 'No customer matches “' + query + '”',
+        'Search looks at the name, email, and phone on the Shopify customer record.');
+      return;
+    }
+    if (body.customers.length === 1) {
+      for (const c of body.customers) state.names.set(c.id, c);
+      return lookupById(body.customers[0].id.replace('gid://shopify/Customer/', ''));
+    }
+    // More than one: let them pick rather than guessing at the first hit.
+    panel.textContent = '';
+    const card = el('div', 'stack');
+    card.appendChild(el('div', 'field-help', body.customers.length + ' customers match. Pick one:'));
+    for (const c of body.customers) {
+      state.names.set(c.id, c);
+      const pick = el('button', 'btn btn-plain btn-stacked');
+      pick.type = 'button';
+      pick.append(el('span', null, c.displayName), el('span', 'mono', c.email || c.id.replace('gid://shopify/Customer/', '')));
+      pick.onclick = () => {
+        $('lookup-id').value = c.id.replace('gid://shopify/Customer/', '');
+        void lookupById(c.id.replace('gid://shopify/Customer/', ''));
+      };
+      card.appendChild(pick);
+    }
+    panel.appendChild(card);
+  } catch (err) {
+    warn(panel, 'Could not search customers', String(err && err.message ? err.message : err));
+  } finally {
+    busy($('lookup-go'), false, 'Look up');
+  }
+}
+async function lookupById(raw) {
+  const panel = $('lookup-result');
+  panel.textContent = '';
   const customerId = 'gid://shopify/Customer/' + raw;
   const q = encodeURIComponent(customerId);
   busy($('lookup-go'), true, 'Looking up…');
@@ -1077,6 +1187,7 @@ async function lookupCustomer() {
     state.entriesLoaded = true;
     state.lookup = { customerId, raw };
     state.shown = PAGE_SIZE;
+    await resolveNames([customerId]);
     renderLookup(balance, entries.entries.length);
     renderEntries();
     $('lookup-clear').hidden = false;
@@ -1111,6 +1222,13 @@ function renderLookup(balance, entryCount) {
     card.appendChild(body);
     return card;
   };
+  const known = nameFor(state.lookup.customerId);
+  if (known) {
+    const who = el('div');
+    who.append(el('div', 'card-title', known.displayName));
+    who.appendChild(el('div', 'field-help', known.email ? known.email + ' · ' + state.lookup.raw : 'Customer ' + state.lookup.raw));
+    panel.appendChild(who);
+  }
   grid.append(
     tile('Points balance', nf.format(balance.balance), 'Worth ' + money(balance.maxDiscountAmount, state.currency)),
     tile(
@@ -1153,7 +1271,7 @@ $('lookup-clear').onclick = async () => {
   state.shown = PAGE_SIZE;
   await loadEntries();
 };
-$('loadMore').onclick = () => { state.shown += PAGE_SIZE; renderEntries(); };
+$('loadMore').onclick = () => { state.shown += PAGE_SIZE; renderEntries(); void fillVisibleNames(); };
 
 $('export').onclick = async () => {
   // Export exactly what is on screen, filters and lookup included.
@@ -1194,6 +1312,7 @@ async function loadEntries() {
   state.lookup = null;
   $('lookup-clear').hidden = true;
   renderEntries();
+  await fillVisibleNames();
 }
 async function refreshOverview() {
   const overview = await (await authed('/api/overview')).json();

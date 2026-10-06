@@ -287,6 +287,16 @@ a.mono:hover { text-decoration: underline; }
  * text — the clickable customer ids in the ledger read as inert text.
  */
 .btn-plain.mono { color: var(--text-link); }
+/*
+ * A customer: their name, with the id or email kept underneath. The id is
+ * still what a Shopify URL and a support conversation are keyed on, so it
+ * stays on screen — just not as the headline.
+ */
+.btn-stacked {
+  flex-direction: column; align-items: flex-start; gap: 0;
+  text-align: start; color: var(--text-link); padding-block: var(--space-1);
+}
+.btn-stacked .mono { font-size: 11px; line-height: 14px; }
 
 /* ---------- misc ---------- */
 .empty { padding: var(--space-10) var(--space-4); text-align: center; color: var(--text-subdued); }

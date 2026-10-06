@@ -125,3 +125,163 @@ export class GraphqlAdminOrdersClient implements AdminOrdersClient {
     };
   }
 }
+
+/**
+ * Who a customer id actually is. The ledger stores Shopify customer gids and
+ * nothing else — correct, since names are Shopify's record to keep and this
+ * app must not hold a stale copy of PII it would then have to redact. But an
+ * admin that shows a merchant "6123456789 +89 Earned POS" has made them do
+ * the join by hand, so the page resolves ids to names at read time and keeps
+ * nothing beyond a short cache.
+ */
+export interface CustomerSummary {
+  id: string;
+  displayName: string;
+  email: string | null;
+}
+
+export interface CustomerDirectory {
+  /** Names for ids already on screen. Unknown ids are simply absent. */
+  lookup(shopDomain: string, ids: string[]): Promise<CustomerSummary[]>;
+  /** Free-text search over Shopify's own customer index (name, email, phone). */
+  search(shopDomain: string, query: string): Promise<CustomerSummary[]>;
+}
+
+const CUSTOMER_FIELDS = /* GraphQL */ `
+  id
+  displayName
+  email
+`;
+
+const CUSTOMER_NODES_QUERY = /* GraphQL */ `
+  query CustomerNames($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on Customer {
+        ${CUSTOMER_FIELDS}
+      }
+    }
+  }
+`;
+
+const CUSTOMER_SEARCH_QUERY = /* GraphQL */ `
+  query CustomerSearch($query: String!, $first: Int!) {
+    customers(first: $first, query: $query) {
+      nodes {
+        ${CUSTOMER_FIELDS}
+      }
+    }
+  }
+`;
+
+/** Shopify's own cap on nodes(ids:) in one call. */
+const MAX_NODES_PER_CALL = 250;
+export const CUSTOMER_SEARCH_LIMIT = 10;
+/**
+ * Names change rarely and a dashboard re-reads the same page of the ledger
+ * constantly, so a short per-shop cache keeps a tab refresh from costing an
+ * Admin API call per visible customer. Deliberately short: a merchant who
+ * corrects a misspelled name expects to see it fixed on the next look.
+ */
+const NAME_TTL_MS = 5 * 60 * 1000;
+
+interface CustomerNode {
+  id?: string;
+  displayName?: string | null;
+  email?: string | null;
+}
+
+function toSummary(node: CustomerNode | null): CustomerSummary | undefined {
+  if (!node?.id) return undefined;
+  return {
+    id: node.id,
+    // A customer with no name at all still has to be nameable on screen.
+    displayName: node.displayName?.trim() || node.email?.trim() || 'Unnamed customer',
+    email: node.email ?? null,
+  };
+}
+
+export class GraphqlCustomerDirectory implements CustomerDirectory {
+  private readonly cache = new Map<string, { summary: CustomerSummary; at: number }>();
+
+  constructor(
+    private readonly tokens: TokenProvider,
+    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly apiVersion: string = ADMIN_API_VERSION,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  private async query<T>(
+    shopDomain: string,
+    query: string,
+    variables: Record<string, unknown>,
+  ): Promise<T> {
+    const token = await this.tokens.accessTokenFor(shopDomain);
+    if (!token) throw new Error(`No Admin API token stored for ${shopDomain}`);
+    const res = await this.fetchImpl(
+      `https://${shopDomain}/admin/api/${this.apiVersion}/graphql.json`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-shopify-access-token': token },
+        body: JSON.stringify({ query, variables }),
+      },
+    );
+    if (!res.ok) throw new Error(`Admin API ${res.status} for ${shopDomain}`);
+    const body = (await res.json()) as { data?: T; errors?: Array<{ message: string }> };
+    if (body.errors?.length) {
+      throw new Error(
+        `Admin API errors for ${shopDomain}: ${body.errors.map((e) => e.message).join('; ')}`,
+      );
+    }
+    if (!body.data) throw new Error(`Admin API returned no data for ${shopDomain}`);
+    return body.data;
+  }
+
+  private cacheKey(shopDomain: string, id: string): string {
+    // Neither a shop domain nor a gid can contain a space.
+    return `${shopDomain} ${id}`;
+  }
+
+  private remember(shopDomain: string, summary: CustomerSummary): CustomerSummary {
+    this.cache.set(this.cacheKey(shopDomain, summary.id), { summary, at: this.now() });
+    return summary;
+  }
+
+  async lookup(shopDomain: string, ids: string[]): Promise<CustomerSummary[]> {
+    const found: CustomerSummary[] = [];
+    const missing: string[] = [];
+    for (const id of new Set(ids)) {
+      const hit = this.cache.get(this.cacheKey(shopDomain, id));
+      if (hit && this.now() - hit.at < NAME_TTL_MS) found.push(hit.summary);
+      else missing.push(id);
+    }
+    for (let i = 0; i < missing.length; i += MAX_NODES_PER_CALL) {
+      const batch = missing.slice(i, i + MAX_NODES_PER_CALL);
+      const data = await this.query<{ nodes: Array<CustomerNode | null> }>(
+        shopDomain,
+        CUSTOMER_NODES_QUERY,
+        { ids: batch },
+      );
+      // A deleted or redacted customer comes back as a null node; the ledger
+      // keeps its entries either way, so the page falls back to the bare id.
+      for (const node of data.nodes) {
+        const summary = toSummary(node);
+        if (summary) found.push(this.remember(shopDomain, summary));
+      }
+    }
+    return found;
+  }
+
+  async search(shopDomain: string, query: string): Promise<CustomerSummary[]> {
+    const data = await this.query<{ customers: { nodes: CustomerNode[] } }>(
+      shopDomain,
+      CUSTOMER_SEARCH_QUERY,
+      { query, first: CUSTOMER_SEARCH_LIMIT },
+    );
+    const results: CustomerSummary[] = [];
+    for (const node of data.customers.nodes) {
+      const summary = toSummary(node);
+      if (summary) results.push(this.remember(shopDomain, summary));
+    }
+    return results;
+  }
+}

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import type { CustomerDirectory } from '../src/admin-client.js';
 import {
   makeApp,
   makeDeps,
@@ -514,5 +515,89 @@ describe('settings and export', () => {
     expect(header).toBe('id,customer_id,order_id,refund_id,source_name,delta,reason,created_at');
     expect(row).toContain('gid://shopify/Customer/42');
     expect(row).toContain('earn');
+  });
+});
+
+describe('customer directory for the admin', () => {
+  const directory = (overrides: Partial<CustomerDirectory> = {}): CustomerDirectory => ({
+    lookup: async (_shop, ids) =>
+      ids.map((id) => ({ id, displayName: 'Dana Whitfield', email: 'dana@example.com' })),
+    search: async () => [
+      { id: CUSTOMER, displayName: 'Dana Whitfield', email: 'dana@example.com' },
+    ],
+    ...overrides,
+  });
+
+  it('resolves names for the ids the admin is about to show', async () => {
+    const { app } = makeApp({ ...makeDeps(), customers: directory() });
+    const res = await app.request(
+      await authed('/customers?ids=' + encodeURIComponent(CUSTOMER)),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      available: true,
+      customers: [{ id: CUSTOMER, displayName: 'Dana Whitfield', email: 'dana@example.com' }],
+    });
+  });
+
+  it('searches by name or email', async () => {
+    const { app } = makeApp({ ...makeDeps(), customers: directory() });
+    const res = await app.request(await authed('/customers/search?q=dana'));
+    expect(await res.json()).toMatchObject({ available: true });
+  });
+
+  /*
+   * The state this app is actually in today: no Partner account, so no Admin
+   * token. The admin must keep working and simply show ids — a dashboard that
+   * errors because names are unavailable has broken the one thing it is for.
+   */
+  it('reports names unavailable rather than failing when there is no directory', async () => {
+    const { app } = makeApp(makeDeps());
+    const res = await app.request(
+      await authed('/customers?ids=' + encodeURIComponent(CUSTOMER)),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ available: false, customers: [] });
+  });
+
+  it('reports names unavailable when the Admin API call fails', async () => {
+    const { app } = makeApp({
+      ...makeDeps(),
+      customers: directory({
+        lookup: async () => {
+          throw new Error('Admin API 401');
+        },
+      }),
+    });
+    const res = await app.request(
+      await authed('/customers?ids=' + encodeURIComponent(CUSTOMER)),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ available: false, customers: [] });
+  });
+
+  it('ignores anything that is not a customer gid, and caps the batch', async () => {
+    let asked: string[] = [];
+    const { app } = makeApp({
+      ...makeDeps(),
+      customers: directory({
+        lookup: async (_shop, ids) => {
+          asked = ids;
+          return [];
+        },
+      }),
+    });
+    const ids = [CUSTOMER, 'gid://shopify/Order/9', 'nonsense', ''].join(',');
+    await app.request(await authed('/customers?ids=' + encodeURIComponent(ids)));
+    expect(asked).toEqual([CUSTOMER]);
+  });
+
+  it('refuses a customer session — names are merchant-only', async () => {
+    const { app } = makeApp({ ...makeDeps(), customers: directory() });
+    const token = await sessionToken(SHOP, { sub: CUSTOMER });
+    const res = await app.request(
+      await authed('/customers?ids=' + encodeURIComponent(CUSTOMER), {}, token),
+    );
+    expect(res.status).toBe(403);
   });
 });

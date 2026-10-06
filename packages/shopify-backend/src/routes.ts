@@ -9,6 +9,7 @@ import {
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { adminPageHtml } from './admin-page.js';
+import type { CustomerDirectory } from './admin-client.js';
 import { verifyWebhookHmac } from './hmac.js';
 import { verifySessionToken } from './session-token.js';
 import { processWebhook, type WebhookDeps } from './webhooks.js';
@@ -23,6 +24,12 @@ export interface AppDeps extends WebhookDeps {
   awardBatches: AwardBatchStore;
   /** Optional: powers the dashboard's "this app checks itself" status. */
   reconStatus?: ReconStatusSource;
+  /**
+   * Optional: resolves customer gids to names for the admin. Absent before an
+   * Admin API token exists (local development, a fresh install), and the
+   * admin is built to read correctly without it.
+   */
+  customers?: CustomerDirectory;
   apiSecret: string;
   apiKey: string;
 }
@@ -429,6 +436,43 @@ export function createApp(deps: AppDeps): Hono<Env> {
     }
     await deps.awardBatches.put(shopDomain, batchId, results);
     return c.json({ batchId, results });
+  });
+
+  /**
+   * Names for customer ids the admin is about to show, and search over
+   * Shopify's own customer index.
+   *
+   * Both answer 200 with `available: false` rather than an error when the
+   * directory is missing or the Admin API call fails: a dashboard that shows
+   * ledger entries is doing its job, and losing names is a degraded view, not
+   * a broken one. The ledger is never blocked on Shopify being reachable —
+   * that is the whole point of holding the balance here.
+   */
+  const MAX_NAME_LOOKUP = 250;
+  merchant.get('/customers', async (c) => {
+    const ids = (c.req.query('ids') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => isCustomerGid(s))
+      .slice(0, MAX_NAME_LOOKUP);
+    if (!deps.customers || ids.length === 0) return c.json({ available: false, customers: [] });
+    try {
+      return c.json({ available: true, customers: await deps.customers.lookup(c.get('shopDomain'), ids) });
+    } catch (err) {
+      deps.log?.('customer name lookup failed', { shopDomain: c.get('shopDomain'), error: String(err) });
+      return c.json({ available: false, customers: [] });
+    }
+  });
+
+  merchant.get('/customers/search', async (c) => {
+    const query = (c.req.query('q') ?? '').trim();
+    if (!deps.customers || query === '') return c.json({ available: false, customers: [] });
+    try {
+      return c.json({ available: true, customers: await deps.customers.search(c.get('shopDomain'), query) });
+    } catch (err) {
+      deps.log?.('customer search failed', { shopDomain: c.get('shopDomain'), error: String(err) });
+      return c.json({ available: false, customers: [] });
+    }
   });
 
   merchant.get('/settings', async (c) => {

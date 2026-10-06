@@ -10,7 +10,7 @@ import { PgComplianceStore } from './compliance.js';
 import { PgReferralStore } from './referrals.js';
 import { PgAwardBatchStore } from './awards.js';
 import { createApp } from './routes.js';
-import { GraphqlAdminOrdersClient } from './admin-client.js';
+import { GraphqlAdminOrdersClient, GraphqlCustomerDirectory } from './admin-client.js';
 import { PgReconRunStore, startReconciliationLoop } from './scheduler.js';
 
 const config = configFromEnv();
@@ -33,6 +33,9 @@ const app = createApp({
   referrals,
   awardBatches: new PgAwardBatchStore(db),
   reconStatus: runs,
+  // Shares the reconciliation job's token store; absent-token shops simply
+  // get an admin that shows customer ids, which is what it did before.
+  customers: new GraphqlCustomerDirectory(runs),
   apiSecret: config.apiSecret,
   apiKey: config.apiKey,
   log,

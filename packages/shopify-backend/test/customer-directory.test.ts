@@ -27,6 +27,10 @@ function stubFetch(answers: unknown[]): { fetch: typeof fetch; calls: Call[] } {
 
 const tokens = { accessTokenFor: async () => 'shpat_test' };
 
+/** The cache is private; its size is the thing under test, not its shape. */
+const cacheSize = (dir: GraphqlCustomerDirectory): number =>
+  (dir as unknown as { cache: Map<string, unknown> }).cache.size;
+
 describe('GraphqlCustomerDirectory', () => {
   it('resolves ids to names', async () => {
     const { fetch, calls } = stubFetch([
@@ -112,6 +116,46 @@ describe('GraphqlCustomerDirectory', () => {
     const dir = new GraphqlCustomerDirectory({ accessTokenFor: async () => undefined }, fetch);
     await expect(dir.lookup(SHOP, [gid('1')])).rejects.toThrow('No Admin API token');
     expect(calls).toHaveLength(0);
+  });
+
+  it('forgets a customer on request, so a redact leaves nothing cached', async () => {
+    const { fetch, calls } = stubFetch([
+      { nodes: [{ id: gid('1'), displayName: 'Dana Whitfield', email: 'dana@example.com' }] },
+    ]);
+    const dir = new GraphqlCustomerDirectory(tokens, fetch);
+    await dir.lookup(SHOP, [gid('1')]);
+    dir.forget(SHOP, gid('1'));
+    await dir.lookup(SHOP, [gid('1')]);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('evicts expired entries rather than leaving them in the map', async () => {
+    let now = 0;
+    const { fetch } = stubFetch([
+      { nodes: [{ id: gid('1'), displayName: 'Dana Whitfield', email: null }] },
+    ]);
+    const dir = new GraphqlCustomerDirectory(tokens, fetch, undefined, () => now);
+    await dir.lookup(SHOP, [gid('1')]);
+    now += 5 * 60 * 1000 + 1;
+    await dir.lookup(SHOP, [gid('1')]);
+    // One live entry, not one live plus one expired corpse.
+    expect(cacheSize(dir)).toBe(1);
+  });
+
+  it('keeps the cache bounded, oldest out first', async () => {
+    const impl = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as Call;
+      const ids = body.variables['ids'] as string[];
+      return new Response(
+        JSON.stringify({
+          data: { nodes: ids.map((id) => ({ id, displayName: 'Customer ' + id, email: null })) },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof fetch;
+    const dir = new GraphqlCustomerDirectory(tokens, impl);
+    for (let i = 0; i < 5200; i++) await dir.lookup(SHOP, [gid(String(i))]);
+    expect(cacheSize(dir)).toBeLessThanOrEqual(5000);
   });
 
   it('searches Shopify customers by free text', async () => {

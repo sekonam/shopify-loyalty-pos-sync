@@ -260,6 +260,27 @@ describe('compliance and lifecycle topics', () => {
     expect(deps.compliance.redacted).toEqual([{ shopDomain: SHOP, customerId: CUSTOMER }]);
   });
 
+  it('customers/redact also drops the admin name cache for that customer', async () => {
+    const forgotten: Array<{ shopDomain: string; customerId: string }> = [];
+    const deps = {
+      ...makeDeps(),
+      customers: {
+        lookup: async () => [],
+        search: async () => [],
+        forget: (shopDomain: string, customerId: string) =>
+          void forgotten.push({ shopDomain, customerId }),
+      },
+    };
+    await deliver(deps, 'customers/redact', {
+      shop_domain: SHOP,
+      customer: { id: 42 },
+      orders_to_redact: [1001],
+    });
+    // The ledger rows are anonymised by the compliance store; this is the only
+    // other place the person's name could still have been read from.
+    expect(forgotten).toEqual([{ shopDomain: SHOP, customerId: CUSTOMER }]);
+  });
+
   it('customers/data_request is acknowledged', async () => {
     const deps = makeDeps();
     const outcome = await deliver(deps, 'customers/data_request', {

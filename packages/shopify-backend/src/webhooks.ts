@@ -20,6 +20,8 @@ export interface WebhookDeps {
   receipts: ReceiptStore;
   compliance: ComplianceStore;
   referrals: ReferralStore;
+  /** Optional; present once an Admin API token exists. See customers/redact. */
+  customers?: { forget(shopDomain: string, customerId: string): void };
   log?: (msg: string, extra?: Record<string, unknown>) => void;
 }
 
@@ -94,7 +96,11 @@ export async function processWebhook(
         outcome = { handled: false, reason: 'customers/redact without customer id' };
         break;
       }
-      await deps.compliance.redactCustomer(delivery.shopDomain, customerGid(p.customer.id));
+      const redacted = customerGid(p.customer.id);
+      await deps.compliance.redactCustomer(delivery.shopDomain, redacted);
+      // The ledger rows are anonymised above; this drops the only other place
+      // the person's name could still be read from — the admin's name cache.
+      deps.customers?.forget(delivery.shopDomain, redacted);
       outcome = { handled: true, action: 'customer redacted' };
       break;
     }

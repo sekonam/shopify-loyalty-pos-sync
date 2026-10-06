@@ -269,7 +269,10 @@ table.data th {
 table.data td { padding: var(--space-2) var(--space-3); font-size: 12px; line-height: 16px; border-bottom: 1px solid var(--border); }
 table.data tbody tr:hover { background: var(--surface-hover); }
 table.data tbody tr:last-child td { border-bottom: 0; }
-td.num { text-align: end; font-variant-numeric: tabular-nums; font-weight: 550; }
+/* Must out-specify "table.data th, table.data td { text-align: start }" above,
+   which an unqualified .num does not. */
+table.data th.num, table.data td.num { text-align: end; }
+td.num { font-variant-numeric: tabular-nums; font-weight: 550; }
 /*
  * Credits read green; debits deliberately do NOT read red. A redemption is
  * the program working, not an error, and the Reason badge already names it —

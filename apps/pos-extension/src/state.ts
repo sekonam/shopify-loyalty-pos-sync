@@ -142,14 +142,22 @@ export function money(amount: string | number, currency?: string | null | undefi
   const floored = Math.floor(value * 100 + 1e-6) / 100;
   if (currency) {
     try {
+      // Match the storefront's own money: "$45.00", not "US$45.00".
       return new Intl.NumberFormat(undefined, {
         style: 'currency',
         currency,
-        // Match the storefront's own money: "$45.00", not "US$45.00".
         currencyDisplay: 'narrowSymbol',
       }).format(floored);
     } catch {
-      // Unknown currency code — fall through to the bare amount.
+      // narrowSymbol is an option a restricted runtime may reject outright.
+      // Falling straight through would drop every currency to a bare number —
+      // an ambiguous amount is the one thing this function exists to prevent —
+      // so try the default symbol before giving up on formatting at all.
+      try {
+        return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(floored);
+      } catch {
+        // Unknown currency code — fall through to the bare amount.
+      }
     }
   }
   return formatAmount(floored);

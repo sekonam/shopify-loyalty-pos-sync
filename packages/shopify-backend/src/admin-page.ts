@@ -307,7 +307,9 @@ let state = {
   totalEntries: 0, lookup: null, outstanding: 0, entriesLoaded: false,
   // customerId -> { displayName, email }. Resolved from Shopify at read time
   // and never stored: names are Shopify's record, not this app's.
-  names: new Map(), namesAvailable: null,
+  // namesRetryAfter backs off after a failure instead of giving up for good —
+  // one rate-limited Admin API call should not mean bare ids until reload.
+  names: new Map(), namesRetryAfter: 0,
 };
 
 /* ---------- plumbing ---------- */
@@ -962,23 +964,38 @@ $('applyAwards').onclick = async () => {
 function nameFor(customerId) {
   return state.names.get(customerId);
 }
+/** Matches the server's per-request cap, so nothing is ever silently trimmed. */
+const NAME_BATCH = 250;
+const NAME_RETRY_MS = 60 * 1000;
 async function resolveNames(customerIds) {
   const missing = [...new Set(customerIds)].filter((id) => !state.names.has(id));
-  if (missing.length === 0 || state.namesAvailable === false) return false;
-  try {
-    const res = await authed('/api/customers?ids=' + encodeURIComponent(missing.join(',')));
-    const body = await res.json();
-    state.namesAvailable = body.available === true;
-    if (!state.namesAvailable) return false;
-    for (const c of body.customers) state.names.set(c.id, c);
-    // Ids Shopify didn't return (deleted, redacted) are remembered as absent
-    // so the page doesn't ask again on every render.
-    for (const id of missing) if (!state.names.has(id)) state.names.set(id, null);
-    return true;
-  } catch (err) {
-    state.namesAvailable = false;
-    return false;
+  if (missing.length === 0 || Date.now() < state.namesRetryAfter) return false;
+  let resolvedAny = false;
+  for (let i = 0; i < missing.length; i += NAME_BATCH) {
+    const batch = missing.slice(i, i + NAME_BATCH);
+    try {
+      const res = await authed('/api/customers?ids=' + encodeURIComponent(batch.join(',')));
+      if (!res.ok) throw new Error('names request failed: ' + res.status);
+      const body = await res.json();
+      if (body.available !== true) {
+        // Either no Admin token exists yet (the structural case — the server
+        // answers this without calling Shopify, so retrying is nearly free) or
+        // the call failed. Back off briefly; do not write off the session.
+        state.namesRetryAfter = Date.now() + NAME_RETRY_MS;
+        return resolvedAny;
+      }
+      for (const c of body.customers) state.names.set(c.id, c);
+      // Ids Shopify didn't return (deleted, redacted) are remembered as absent
+      // so the page doesn't ask again on every render. Only ids actually
+      // covered by this response are written off.
+      for (const id of batch) if (!state.names.has(id)) state.names.set(id, null);
+      resolvedAny = true;
+    } catch (err) {
+      state.namesRetryAfter = Date.now() + NAME_RETRY_MS;
+      return resolvedAny;
+    }
   }
+  return resolvedAny;
 }
 /** Names for the rows currently drawn, then one re-render with them in. */
 async function fillVisibleNames() {
@@ -1147,7 +1164,15 @@ async function searchCustomers(query) {
     }
     if (body.customers.length === 1) {
       for (const c of body.customers) state.names.set(c.id, c);
-      return lookupById(body.customers[0].id.replace('gid://shopify/Customer/', ''));
+      // Awaited inside the try on purpose: returning here would run the
+      // finally at the first await, re-enabling the button and inviting a
+      // second concurrent lookup while this one is still in flight.
+      const only = body.customers[0].id.replace('gid://shopify/Customer/', '');
+      // Leave the resolved id in the field, so pressing Enter again repeats
+      // this lookup rather than re-running the free-text search.
+      $('lookup-id').value = only;
+      await lookupById(only);
+      return;
     }
     // More than one: let them pick rather than guessing at the first hit.
     panel.textContent = '';
@@ -1294,8 +1319,13 @@ $('export').onclick = async () => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'points-ledger.csv';
+    // In the document, because a synthetic click on a detached anchor does
+    // not download in Firefox; revoked on a later turn, because revoking in
+    // the same tick can cancel a save already under way.
+    a.style.display = 'none';
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(a.href);
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
     toast(query ? 'CSV downloaded for this view' : 'CSV downloaded');
   } catch (err) {
     toast('Could not download the CSV. Check your connection and try again.', 'critical');

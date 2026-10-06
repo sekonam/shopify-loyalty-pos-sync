@@ -59,14 +59,22 @@ function money(amount: string | number, currency?: string | null): string {
   const code = currency ?? presentmentCurrency();
   if (code) {
     try {
+      // Match the storefront's own money: "$45.00", not "US$45.00".
       return new Intl.NumberFormat(undefined, {
         style: 'currency',
         currency: code,
-        // Match the storefront's own money: "$45.00", not "US$45.00".
         currencyDisplay: 'narrowSymbol',
       }).format(floored);
     } catch {
-      // Unknown currency code — fall through to the plain amount.
+      // narrowSymbol is an option a restricted runtime may reject outright.
+      // Falling straight through would drop every currency to a bare number —
+      // an ambiguous amount is the one thing this function exists to prevent —
+      // so try the default symbol before giving up on formatting at all.
+      try {
+        return new Intl.NumberFormat(undefined, { style: 'currency', currency: code }).format(floored);
+      } catch {
+        // Unknown currency code — fall through to the plain amount.
+      }
     }
   }
   return floored.toFixed(2);

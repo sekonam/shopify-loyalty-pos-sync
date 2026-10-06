@@ -525,6 +525,7 @@ describe('customer directory for the admin', () => {
     search: async () => [
       { id: CUSTOMER, displayName: 'Dana Whitfield', email: 'dana@example.com' },
     ],
+    forget: () => undefined,
     ...overrides,
   });
 
@@ -588,6 +589,31 @@ describe('customer directory for the admin', () => {
       }),
     });
     const ids = [CUSTOMER, 'gid://shopify/Order/9', 'nonsense', ''].join(',');
+    await app.request(await authed('/customers?ids=' + encodeURIComponent(ids)));
+    expect(asked).toEqual([CUSTOMER]);
+  });
+
+  it('refuses an over-cap batch rather than truncating it', async () => {
+    const { app } = makeApp({ ...makeDeps(), customers: directory() });
+    const ids = Array.from({ length: 251 }, (_, i) => `gid://shopify/Customer/${i}`).join(',');
+    const res = await app.request(await authed('/customers?ids=' + encodeURIComponent(ids)));
+    // Truncating would hand back a response the caller reads as "these ids
+    // have no name", and it caches that answer.
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a malformed gid outright, so one bad id cannot fail the batch', async () => {
+    let asked: string[] = [];
+    const { app } = makeApp({
+      ...makeDeps(),
+      customers: directory({
+        lookup: async (_shop, ids) => {
+          asked = ids;
+          return [];
+        },
+      }),
+    });
+    const ids = [CUSTOMER, 'gid://shopify/Customer/abc'].join(',');
     await app.request(await authed('/customers?ids=' + encodeURIComponent(ids)));
     expect(asked).toEqual([CUSTOMER]);
   });

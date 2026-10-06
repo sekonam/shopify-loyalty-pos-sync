@@ -42,6 +42,14 @@ const isCustomerGid = (s: string | undefined): s is string =>
   typeof s === 'string' && s.startsWith('gid://shopify/Customer/');
 
 /**
+ * A typo, a pasted email, or a name would otherwise become a permanent ledger
+ * row against an identity that does not exist — in an append-only ledger there
+ * is nothing to delete afterwards. The same strictness applies to name lookup,
+ * where one malformed id fails the whole GraphQL batch.
+ */
+const customerGidPattern = /^gid:\/\/shopify\/Customer\/\d+$/;
+
+/**
  * Token classification is an ALLOWLIST, never a denylist. A checkout token
  * for a signed-in customer carries the customer gid as `sub`; POS staff and
  * admin (App Bridge) tokens carry a numeric Shopify user id. A token with no
@@ -388,10 +396,6 @@ export function createApp(deps: AppDeps): Hono<Env> {
     }
     const batchId = body.batchId ?? randomUUID();
     const awards = body.awards ?? [];
-    // A typo, a pasted email, or a name would otherwise become a permanent
-    // ledger row against an identity that does not exist — in an append-only
-    // ledger there is nothing to delete afterwards.
-    const customerGidPattern = /^gid:\/\/shopify\/Customer\/\d+$/;
     if (
       awards.length === 0 ||
       awards.length > 500 ||
@@ -450,11 +454,18 @@ export function createApp(deps: AppDeps): Hono<Env> {
    */
   const MAX_NAME_LOOKUP = 250;
   merchant.get('/customers', async (c) => {
+    // Strict, not prefix-only: a malformed id reaches nodes(ids:) as a GraphQL
+    // error that fails the whole batch, costing every other name in it.
     const ids = (c.req.query('ids') ?? '')
       .split(',')
       .map((s) => s.trim())
-      .filter((s) => isCustomerGid(s))
-      .slice(0, MAX_NAME_LOOKUP);
+      .filter((s) => customerGidPattern.test(s));
+    if (ids.length > MAX_NAME_LOOKUP) {
+      // Refused rather than truncated: the caller marks ids it asked for and
+      // did not get back as nameless, so a silent trim would cache a wrong
+      // answer for the remainder.
+      return c.json({ error: `at most ${MAX_NAME_LOOKUP} ids per request` }, 400);
+    }
     if (!deps.customers || ids.length === 0) return c.json({ available: false, customers: [] });
     try {
       return c.json({ available: true, customers: await deps.customers.lookup(c.get('shopDomain'), ids) });

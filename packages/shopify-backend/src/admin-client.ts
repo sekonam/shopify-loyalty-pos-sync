@@ -145,6 +145,13 @@ export interface CustomerDirectory {
   lookup(shopDomain: string, ids: string[]): Promise<CustomerSummary[]>;
   /** Free-text search over Shopify's own customer index (name, email, phone). */
   search(shopDomain: string, query: string): Promise<CustomerSummary[]>;
+  /**
+   * Drop anything cached about a customer. Called from the customers/redact
+   * handler: this app holds names only in memory and only briefly, but once
+   * Shopify has told us to forget someone, serving their name from a cache
+   * for another five minutes is not something to defend at app review.
+   */
+  forget(shopDomain: string, customerId: string): void;
 }
 
 const CUSTOMER_FIELDS = /* GraphQL */ `
@@ -183,6 +190,12 @@ export const CUSTOMER_SEARCH_LIMIT = 10;
  * corrects a misspelled name expects to see it fixed on the next look.
  */
 const NAME_TTL_MS = 5 * 60 * 1000;
+/**
+ * Hard ceiling on remembered names, so a long-lived process paging a large
+ * shop's ledger cannot grow this map without bound. Oldest-written go first;
+ * losing one only costs a re-read.
+ */
+const MAX_CACHED_NAMES = 5000;
 
 interface CustomerNode {
   id?: string;
@@ -242,17 +255,34 @@ export class GraphqlCustomerDirectory implements CustomerDirectory {
   }
 
   private remember(shopDomain: string, summary: CustomerSummary): CustomerSummary {
-    this.cache.set(this.cacheKey(shopDomain, summary.id), { summary, at: this.now() });
+    const key = this.cacheKey(shopDomain, summary.id);
+    // Re-set moves the key to the end of the Map's insertion order, which is
+    // what makes the eviction below oldest-first.
+    this.cache.delete(key);
+    this.cache.set(key, { summary, at: this.now() });
+    while (this.cache.size > MAX_CACHED_NAMES) {
+      const oldest = this.cache.keys().next();
+      if (oldest.done) break;
+      this.cache.delete(oldest.value);
+    }
     return summary;
+  }
+
+  forget(shopDomain: string, customerId: string): void {
+    this.cache.delete(this.cacheKey(shopDomain, customerId));
   }
 
   async lookup(shopDomain: string, ids: string[]): Promise<CustomerSummary[]> {
     const found: CustomerSummary[] = [];
     const missing: string[] = [];
     for (const id of new Set(ids)) {
-      const hit = this.cache.get(this.cacheKey(shopDomain, id));
+      const key = this.cacheKey(shopDomain, id);
+      const hit = this.cache.get(key);
       if (hit && this.now() - hit.at < NAME_TTL_MS) found.push(hit.summary);
-      else missing.push(id);
+      else {
+        if (hit) this.cache.delete(key);
+        missing.push(id);
+      }
     }
     for (let i = 0; i < missing.length; i += MAX_NODES_PER_CALL) {
       const batch = missing.slice(i, i + MAX_NODES_PER_CALL);

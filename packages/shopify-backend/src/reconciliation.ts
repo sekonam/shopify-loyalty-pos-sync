@@ -100,7 +100,11 @@ export async function reconcileShop(
       if (order.test || !order.customerId) continue;
 
       const paid = PAID_STATUSES.has(order.financialStatus ?? '');
-      if (paid && !(await deps.ledger.hasEntry(shopDomain, orderPaidKey(order.id)))) {
+      // Whether this order has already earned — before this sweep touches it.
+      // Used twice below: to decide if the earn needs healing at all, and to
+      // decide whether a referral is payable (only earning orders pay).
+      let earned = await deps.ledger.hasEntry(shopDomain, orderPaidKey(order.id));
+      if (paid && !earned) {
         // Shared earn policy with the webhook path. The tier window is
         // evaluated at correction time, not original order time — a
         // deliberate simplification; the divergence is at most one tier
@@ -118,15 +122,30 @@ export async function reconcileShop(
           const { inserted } = await deps.ledger.append({ ...draft, reason: 'reconciliation' });
           if (inserted) earnsAdded += 1;
         }
+        earned = policy.kind === 'earn' && draft !== null;
+      }
 
-        // A dropped webhook must not cost the shop the REST of the handler.
-        // Healing only the earn used to leave two gaps that both move real
-        // money: the forged-discount clawback (the authoritative guard behind
-        // the checkout Function) never ran, and a referral advocate was never
-        // paid — and since the sweep only ever looked at earns, nothing would
-        // have paid them later either. Both steps are idempotent per order,
-        // so running them on every overlapping sweep is free.
-        if (policy.kind === 'earn') {
+      /**
+       * A dropped webhook must not cost the shop the REST of the handler.
+       * Healing only the earn left two gaps that both move real money: the
+       * forged-discount clawback (the authoritative guard behind the checkout
+       * Function) never ran, and a referral advocate was never paid — and
+       * since the sweep only looked at earns, nothing would have paid them
+       * later either.
+       *
+       * Deliberately OUTSIDE the missing-earn branch. Gating these on "the
+       * earn was missing" would mean the sweep could never repair its own
+       * partial work: an order whose earn landed and whose clawback did not
+       * (a crash between the two appends, or an order healed by a deployment
+       * predating this) would never be looked at again. The webhook path has
+       * no such gate — a Shopify redelivery re-runs every step — and both of
+       * these are idempotent per order, so they do not need the earn to be
+       * missing in order to be safe to run. Each also returns before touching
+       * the database when the order carries no loyalty attributes at all,
+       * which is almost every order.
+       */
+      if (paid) {
+        if (earned) {
           await processReferral({
             ledger: deps.ledger,
             referrals: deps.referrals,

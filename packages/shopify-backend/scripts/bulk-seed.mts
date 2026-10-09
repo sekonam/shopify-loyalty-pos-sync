@@ -1099,21 +1099,16 @@ async function phaseVerify() {
   );
   const csvRows = lines.length - 1;
   const shopEntries = stats['entryCount']!;
-  // entriesForShop defaults to 10_000 and /api/ledger.csv passes no limit, so
-  // the export is the 10k MOST RECENT entries. Below that cap the export must
-  // be complete and must match the oracle exactly.
-  if (shopEntries <= 10_000) {
-    const mine = new Set(custs.map((c) => c.gid));
-    const runRows = lines.slice(1).filter((l) => mine.has(l.split(',')[1] ?? '')).length;
-    check(runRows === totalEntries, `csv rows for this run: ${runRows} vs ${totalEntries}`);
-  } else {
-    check(csvRows === 10_000, `csv capped at 10000 rows, got ${csvRows} of ${shopEntries}`);
-    findings.push(
-      `CSV export returns only the 10,000 most recent of ${shopEntries} ledger entries ` +
-        `(entriesForShop's default limit; /api/ledger.csv passes none). Nothing in the file or ` +
-        `the admin says the export is partial — a merchant reconciling a full year would not know.`,
-    );
-  }
+  // The export is the merchant's audit artifact and their answer to a
+  // customers/data_request, so it must be COMPLETE at any size — it was once
+  // silently capped at the store's 10,000-row default, which this asserts can
+  // never come back. Rows are counted whole-shop and for this run's customers.
+  check(csvRows === shopEntries, `csv exported ${csvRows} of ${shopEntries} entries`);
+  const mine = new Set(custs.map((c) => c.gid));
+  const runRows = lines.slice(1).filter((l) => mine.has(l.split(',')[1] ?? '')).length;
+  check(runRows === totalEntries, `csv rows for this run: ${runRows} vs ${totalEntries}`);
+  const ids = new Set(lines.slice(1).map((l) => l.split(',')[0]));
+  check(ids.size === csvRows, `csv rows are distinct: ${ids.size} ids across ${csvRows} rows`);
   check(
     csvRes.headers.get('content-disposition')?.includes('points-ledger.csv') === true,
     `csv filename: ${csvRes.headers.get('content-disposition')}`,
@@ -1140,6 +1135,23 @@ async function phaseVerify() {
   // own 10k-row window plus the aggregate checks above.
   const all = await api('/api/entries?limit=10000', 'staff');
   const rows = all.body['entries'] as Array<{ delta: number; reason: string; sourceName: string; orderId?: string }>;
+  // The window is a window; the total is the whole shop. Reporting the first
+  // as if it were the second is the bug this field exists to prevent.
+  check(
+    all.body['total'] === stats['entryCount'],
+    `entries total ${String(all.body['total'])} == shop entryCount ${stats['entryCount']}`,
+  );
+  for (const reason of ['earn', 'redeem', 'refund_reversal'] as const) {
+    const narrowed = await api(`/api/entries?reason=${reason}&limit=1`, 'staff');
+    const narrowedCsv = await fetch(`${BASE}/api/ledger.csv?reason=${reason}`, {
+      headers: { authorization: `Bearer ${await staff()}` },
+    });
+    const csvCount = (await narrowedCsv.text()).trim().split('\n').length - 1;
+    check(
+      narrowed.body['total'] === csvCount,
+      `filtered total and filtered export agree for '${reason}': ${String(narrowed.body['total'])} vs ${csvCount}`,
+    );
+  }
   check(
     rows.length === Math.min(10_000, stats['entryCount']!),
     `entries window: ${rows.length} vs min(10000, ${stats['entryCount']})`,

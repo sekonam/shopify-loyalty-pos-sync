@@ -246,3 +246,73 @@ describe('reconcileShop heals the whole orders/paid handler, not just the earn',
     );
   });
 });
+
+/**
+ * The sweep must be able to repair its OWN partial work, not just the
+ * webhook's. Gating the attribute steps on "the earn is missing" would mean
+ * an order whose earn landed and whose clawback did not — a crash between the
+ * two appends, or an order healed by a build predating that step — is never
+ * looked at again. The webhook path has no such gate: a redelivery re-runs
+ * every step.
+ */
+describe('reconcileShop repairs its own partial work', () => {
+  const forged = [
+    { name: 'loyalty_discount', value: '5.00' },
+    { name: 'loyalty_attempt', value: '11111111-2222-3333-4444-555555555555' },
+  ];
+
+  it('claws back on a later sweep when the earn already landed without it', async () => {
+    const deps = makeDeps();
+    const run = (attributes: ReconOrder['attributes']) =>
+      reconcileShop(SHOP, new Date(0), {
+        client: clientOf([
+          [order({ id: 'gid://shopify/Order/5001', totalPrice: '50.00', ...(attributes ? { attributes } : {}) })],
+        ]),
+        ledger: deps.ledger,
+        settings: deps.settings,
+        referrals: deps.referrals,
+      });
+    // First sweep sees the order without attributes and heals only the earn.
+    await run(undefined);
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(50);
+    // A later sweep sees the forged discount and must still act on it.
+    await run(forged);
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(0);
+  });
+
+  it('still does not double-claw across repeated sweeps', async () => {
+    const deps = makeDeps();
+    const run = () =>
+      reconcileShop(SHOP, new Date(0), {
+        client: clientOf([
+          [order({ id: 'gid://shopify/Order/5002', totalPrice: '50.00', attributes: forged })],
+        ]),
+        ledger: deps.ledger,
+        settings: deps.settings,
+        referrals: deps.referrals,
+      });
+    await run();
+    await run();
+    await run();
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(0);
+    const adjustments = (await deps.ledger.entries(SHOP, CUSTOMER)).filter(
+      (e) => e.reason === 'adjustment',
+    );
+    expect(adjustments).toHaveLength(1);
+  });
+
+  it('leaves an order with no loyalty attributes completely alone', async () => {
+    const deps = makeDeps();
+    const run = () =>
+      reconcileShop(SHOP, new Date(0), {
+        client: clientOf([[order({ id: 'gid://shopify/Order/5003', totalPrice: '50.00' })]]),
+        ledger: deps.ledger,
+        settings: deps.settings,
+        referrals: deps.referrals,
+      });
+    await run();
+    await run();
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(50);
+    expect(await deps.ledger.entries(SHOP, CUSTOMER)).toHaveLength(1);
+  });
+});

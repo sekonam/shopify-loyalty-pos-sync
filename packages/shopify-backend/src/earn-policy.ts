@@ -7,6 +7,7 @@ import {
   type LedgerStore,
   type ShopSettings,
 } from '@loyalty/ledger';
+
 import type { ReferralStore } from './referrals.js';
 
 export const TIER_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
@@ -126,4 +127,165 @@ export async function reverseOrderRefund(params: {
     }
   }
   return action;
+}
+
+/**
+ * An order's loyalty-bearing attributes, in one shape both callers can speak.
+ * The webhook reads them from `note_attributes`; reconciliation reads the
+ * same values from the Admin API's `customAttributes`.
+ */
+export type OrderAttributes = ReadonlyArray<{ name?: string | undefined; value?: string | undefined }>;
+
+const attributeValue = (attrs: OrderAttributes, name: string): string | undefined =>
+  attrs.find((a) => a.name === name)?.value;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Referral rewards, triggered by the friend's first earning order carrying a
+ * loyalty_referral attribute. One reward per referred customer ever (the
+ * store's primary key enforces it — designed against BON's class of
+ * repeatable-referral bugs); self-referral and unknown codes are ignored
+ * with a log line. Both ledger writes are idempotent per order, so a
+ * redelivered webhook can't double-reward.
+ */
+export async function processReferral(params: {
+  ledger: LedgerStore;
+  referrals: ReferralStore;
+  settings: ShopSettings;
+  shopDomain: string;
+  orderId: string;
+  customerId: string;
+  attributes: OrderAttributes;
+  log?: ((msg: string, extra?: Record<string, unknown>) => void) | undefined;
+}): Promise<string | undefined> {
+  const { shopDomain, orderId, customerId, settings } = params;
+  const deps = params;
+  const referral = settings.referral;
+  const code = attributeValue(params.attributes, 'loyalty_referral')?.trim();
+  if (!code) return undefined;
+  const log = params.log ?? (() => undefined);
+  if (!referral?.enabled) return 'referral code ignored (program disabled)';
+  // First-order test that survives redelivery: earns from THIS order don't
+  // disqualify (the earn append above may already have landed on a previous,
+  // partially-failed delivery of this same webhook).
+  if (await deps.ledger.hasEarnFromOtherOrder(shopDomain, customerId, orderId)) {
+    return 'referral code ignored (not first order)';
+  }
+  const advocate = await deps.referrals.advocateFor(shopDomain, code);
+  if (!advocate) {
+    log('unknown referral code', { shopDomain, orderId, code });
+    return 'referral code unknown';
+  }
+  if (advocate === customerId) {
+    log('self-referral ignored', { shopDomain, orderId });
+    return 'self-referral ignored';
+  }
+  const { created, record } = await deps.referrals.recordOrGet(shopDomain, {
+    advocateCustomerId: advocate,
+    friendCustomerId: customerId,
+    code,
+    orderId,
+    advocatePoints: referral.advocatePoints,
+    friendPoints: referral.friendPoints,
+  });
+  // A standing record for a DIFFERENT order means the one-reward-per-friend
+  // slot is spent. The same order means this is a redelivery whose reward
+  // appends may not have completed — fall through and (re)append them; the
+  // per-order idempotency keys make that safe.
+  if (!created && record.orderId !== orderId) {
+    return 'referral already rewarded for this customer';
+  }
+  const parts: string[] = [];
+  if (record.advocatePoints > 0) {
+    await deps.ledger.append({
+      shopDomain,
+      customerId: record.advocateCustomerId,
+      orderId,
+      sourceName: 'system',
+      delta: record.advocatePoints,
+      reason: 'referral_reward',
+      idempotencyKey: `referral_advocate:${orderId}`,
+    });
+    parts.push(`advocate +${record.advocatePoints}`);
+  }
+  if (record.friendPoints > 0) {
+    await deps.ledger.append({
+      shopDomain,
+      customerId,
+      orderId,
+      sourceName: 'system',
+      delta: record.friendPoints,
+      reason: 'referral_reward',
+      idempotencyKey: `referral_friend:${orderId}`,
+    });
+    parts.push(`friend +${record.friendPoints}`);
+  }
+  return `referral rewarded (${parts.join(', ')})`;
+}
+
+/**
+ * The authoritative guard behind the checkout discount Function. The cart
+ * attributes are buyer-writable; the discount they produced is real money, so
+ * a discount larger than what the named redemption attempt actually paid for
+ * is clawed back from the customer's points (capped at their balance) as a
+ * 'system' adjustment — auditable in the ledger, idempotent per order.
+ */
+export async function enforceLoyaltyAttempt(params: {
+  ledger: LedgerStore;
+  shopDomain: string;
+  orderId: string;
+  customerId: string;
+  attributes: OrderAttributes;
+  redemptionRate: string;
+  log?: ((msg: string, extra?: Record<string, unknown>) => void) | undefined;
+}): Promise<string | undefined> {
+  const { shopDomain, orderId, customerId, redemptionRate } = params;
+  const deps = params;
+  const log = params.log ?? (() => undefined);
+  const attemptId = attributeValue(params.attributes, 'loyalty_attempt');
+  const discountAttr = attributeValue(params.attributes, 'loyalty_discount');
+  if (!attemptId && !discountAttr) return undefined;
+
+  const attempt =
+    attemptId && UUID_RE.test(attemptId)
+      ? await deps.ledger.getAttempt(shopDomain, attemptId)
+      : undefined;
+  const paidForPoints = attempt?.status === 'applied' ? attempt.requestedPoints : 0;
+  const claimedPoints =
+    discountAttr && /^\d+(\.\d{1,2})?$/.test(discountAttr)
+      ? floorProduct(discountAttr, redemptionRate)
+      : 0;
+  const excess = claimedPoints - paidForPoints;
+  if (excess <= 0 && attempt?.status === 'applied') return undefined;
+  if (excess <= 0) {
+    // An attempt id with no applied attempt but also no discount claimed:
+    // suspicious but costless. Log only.
+    log('loyalty attempt attribute without applied redemption', {
+      shopDomain,
+      orderId,
+      attemptId,
+    });
+    return 'ATTEMPT MISMATCH logged';
+  }
+
+  log('loyalty discount exceeds applied redemption — clawing back', {
+    shopDomain,
+    orderId,
+    attemptId,
+    claimedPoints,
+    paidForPoints,
+  });
+  const result = await deps.ledger.appendCapped({
+    shopDomain,
+    customerId,
+    orderId,
+    sourceName: 'system',
+    delta: -excess,
+    reason: 'adjustment',
+    idempotencyKey: `attempt_mismatch:${orderId}`,
+  });
+  return result
+    ? `ATTEMPT MISMATCH: clawed back ${-result.entry.delta}`
+    : 'ATTEMPT MISMATCH: nothing clawable';
 }

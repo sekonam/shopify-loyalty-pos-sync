@@ -1,10 +1,10 @@
+import { sumAmounts, type LedgerStore } from '@loyalty/ledger';
 import {
-  floorProduct,
-  sumAmounts,
-  type LedgerStore,
-  type ShopSettings,
-} from '@loyalty/ledger';
-import { computeOrderEarn, reverseOrderRefund } from './earn-policy.js';
+  computeOrderEarn,
+  enforceLoyaltyAttempt,
+  processReferral,
+  reverseOrderRefund,
+} from './earn-policy.js';
 import { hashPayload, type ReceiptStore } from './receipts.js';
 import type { ReferralStore } from './referrals.js';
 import type { SettingsStore } from './settings.js';
@@ -40,8 +40,6 @@ export type WebhookOutcome =
 const customerGid = (id: number | string): string => `gid://shopify/Customer/${id}`;
 const orderGid = (id: number | string): string => `gid://shopify/Order/${id}`;
 const refundGid = (id: number | string): string => `gid://shopify/Refund/${id}`;
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Dispatches a verified webhook delivery. HMAC verification happens in the
@@ -175,170 +173,37 @@ async function handleOrdersPaid(
       : 'order earned zero points';
   }
 
+  const attributes = order.note_attributes ?? [];
+
   // Referrals only for orders that actually earn — an excluded source or
   // disabled channel must not pay rewards (nor consume the friend's one slot).
   if (policy.kind === 'earn') {
-    const referralAction = await processReferral(shopDomain, oid, customerId, order, settings, deps);
+    const referralAction = await processReferral({
+      ledger: deps.ledger,
+      referrals: deps.referrals,
+      settings,
+      shopDomain,
+      orderId: oid,
+      customerId,
+      attributes,
+      log,
+    });
     if (referralAction) earnAction = `${earnAction}; ${referralAction}`;
   }
 
   // After the earn, so the clawback has the order's own points to claw from.
-  const clawback = await enforceLoyaltyAttempt(
+  const clawback = await enforceLoyaltyAttempt({
+    ledger: deps.ledger,
     shopDomain,
-    oid,
+    orderId: oid,
     customerId,
-    order,
-    deps,
+    attributes,
+    redemptionRate: settings.redemptionRate,
     log,
-    settings.redemptionRate,
-  );
+  });
   return { handled: true, action: clawback ? `${earnAction}; ${clawback}` : earnAction };
 }
 
-/**
- * Referral rewards, triggered by the friend's first earning order carrying a
- * loyalty_referral attribute. One reward per referred customer ever (the
- * store's primary key enforces it — designed against BON's class of
- * repeatable-referral bugs); self-referral and unknown codes are ignored
- * with a log line. Both ledger writes are idempotent per order, so a
- * redelivered webhook can't double-reward.
- */
-async function processReferral(
-  shopDomain: string,
-  orderId: string,
-  customerId: string,
-  order: OrdersPaidPayload,
-  settings: ShopSettings,
-  deps: WebhookDeps,
-): Promise<string | undefined> {
-  const referral = settings.referral;
-  const code = (order.note_attributes ?? [])
-    .find((a) => a.name === 'loyalty_referral')
-    ?.value?.trim();
-  if (!code) return undefined;
-  const log = deps.log ?? (() => undefined);
-  if (!referral?.enabled) return 'referral code ignored (program disabled)';
-  // First-order test that survives redelivery: earns from THIS order don't
-  // disqualify (the earn append above may already have landed on a previous,
-  // partially-failed delivery of this same webhook).
-  if (await deps.ledger.hasEarnFromOtherOrder(shopDomain, customerId, orderId)) {
-    return 'referral code ignored (not first order)';
-  }
-  const advocate = await deps.referrals.advocateFor(shopDomain, code);
-  if (!advocate) {
-    log('unknown referral code', { shopDomain, orderId, code });
-    return 'referral code unknown';
-  }
-  if (advocate === customerId) {
-    log('self-referral ignored', { shopDomain, orderId });
-    return 'self-referral ignored';
-  }
-  const { created, record } = await deps.referrals.recordOrGet(shopDomain, {
-    advocateCustomerId: advocate,
-    friendCustomerId: customerId,
-    code,
-    orderId,
-    advocatePoints: referral.advocatePoints,
-    friendPoints: referral.friendPoints,
-  });
-  // A standing record for a DIFFERENT order means the one-reward-per-friend
-  // slot is spent. The same order means this is a redelivery whose reward
-  // appends may not have completed — fall through and (re)append them; the
-  // per-order idempotency keys make that safe.
-  if (!created && record.orderId !== orderId) {
-    return 'referral already rewarded for this customer';
-  }
-  const parts: string[] = [];
-  if (record.advocatePoints > 0) {
-    await deps.ledger.append({
-      shopDomain,
-      customerId: record.advocateCustomerId,
-      orderId,
-      sourceName: 'system',
-      delta: record.advocatePoints,
-      reason: 'referral_reward',
-      idempotencyKey: `referral_advocate:${orderId}`,
-    });
-    parts.push(`advocate +${record.advocatePoints}`);
-  }
-  if (record.friendPoints > 0) {
-    await deps.ledger.append({
-      shopDomain,
-      customerId,
-      orderId,
-      sourceName: 'system',
-      delta: record.friendPoints,
-      reason: 'referral_reward',
-      idempotencyKey: `referral_friend:${orderId}`,
-    });
-    parts.push(`friend +${record.friendPoints}`);
-  }
-  return `referral rewarded (${parts.join(', ')})`;
-}
-
-/**
- * The authoritative guard behind the checkout discount Function. The cart
- * attributes are buyer-writable; the discount they produced is real money, so
- * a discount larger than what the named redemption attempt actually paid for
- * is clawed back from the customer's points (capped at their balance) as a
- * 'system' adjustment — auditable in the ledger, idempotent per order.
- */
-async function enforceLoyaltyAttempt(
-  shopDomain: string,
-  orderId: string,
-  customerId: string,
-  order: OrdersPaidPayload,
-  deps: WebhookDeps,
-  log: NonNullable<WebhookDeps['log']>,
-  redemptionRate: string,
-): Promise<string | undefined> {
-  const attrs = order.note_attributes ?? [];
-  const attemptId = attrs.find((a) => a.name === 'loyalty_attempt')?.value;
-  const discountAttr = attrs.find((a) => a.name === 'loyalty_discount')?.value;
-  if (!attemptId && !discountAttr) return undefined;
-
-  const attempt =
-    attemptId && UUID_RE.test(attemptId)
-      ? await deps.ledger.getAttempt(shopDomain, attemptId)
-      : undefined;
-  const paidForPoints = attempt?.status === 'applied' ? attempt.requestedPoints : 0;
-  const claimedPoints =
-    discountAttr && /^\d+(\.\d{1,2})?$/.test(discountAttr)
-      ? floorProduct(discountAttr, redemptionRate)
-      : 0;
-  const excess = claimedPoints - paidForPoints;
-  if (excess <= 0 && attempt?.status === 'applied') return undefined;
-  if (excess <= 0) {
-    // An attempt id with no applied attempt but also no discount claimed:
-    // suspicious but costless. Log only.
-    log('loyalty attempt attribute without applied redemption', {
-      shopDomain,
-      orderId,
-      attemptId,
-    });
-    return 'ATTEMPT MISMATCH logged';
-  }
-
-  log('loyalty discount exceeds applied redemption — clawing back', {
-    shopDomain,
-    orderId,
-    attemptId,
-    claimedPoints,
-    paidForPoints,
-  });
-  const result = await deps.ledger.appendCapped({
-    shopDomain,
-    customerId,
-    orderId,
-    sourceName: 'system',
-    delta: -excess,
-    reason: 'adjustment',
-    idempotencyKey: `attempt_mismatch:${orderId}`,
-  });
-  return result
-    ? `ATTEMPT MISMATCH: clawed back ${-result.entry.delta}`
-    : 'ATTEMPT MISMATCH: nothing clawable';
-}
 
 interface RefundsCreatePayload {
   id?: number | string;

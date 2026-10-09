@@ -146,3 +146,103 @@ describe('reconcileShop', () => {
     expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(50);
   });
 });
+
+/**
+ * A dropped orders/paid used to cost the shop everything the handler does
+ * besides the earn. Reconciliation is the defense-in-depth for a dropped
+ * webhook (CLAUDE.md), so "healed" has to mean the same ledger either way —
+ * not the earn alone.
+ */
+describe('reconcileShop heals the whole orders/paid handler, not just the earn', () => {
+  it('claws back a forged loyalty discount the dropped webhook never checked', async () => {
+    const deps = makeDeps();
+    const forged = order({
+      id: 'gid://shopify/Order/2001',
+      totalPrice: '50.00',
+      sourceName: 'web',
+      attributes: [
+        { name: 'loyalty_discount', value: '5.00' },
+        { name: 'loyalty_attempt', value: '11111111-2222-3333-4444-555555555555' },
+      ],
+    });
+    await reconcileShop(SHOP, new Date(0), {
+      client: clientOf([[forged]]),
+      ledger: deps.ledger,
+      settings: deps.settings,
+      referrals: deps.referrals,
+    });
+    // 5.00 of discount at the default rate is 500 points claimed against an
+    // attempt that was never applied; the balance caps the clawback at 50.
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(0);
+    const reasons = (await deps.ledger.entries(SHOP, CUSTOMER)).map((e) => e.reason);
+    expect(reasons).toEqual(['reconciliation', 'adjustment']);
+  });
+
+  it('pays a referral the dropped webhook never paid, exactly once', async () => {
+    const deps = makeDeps();
+    const advocate = 'gid://shopify/Customer/7';
+    await deps.settings.upsert(SHOP, {
+      referral: { enabled: true, advocatePoints: 200, friendPoints: 100 },
+    });
+    const code = await deps.referrals.codeFor(SHOP, advocate);
+    const friendOrder = order({
+      id: 'gid://shopify/Order/3001',
+      totalPrice: '60.00',
+      sourceName: 'web',
+      attributes: [{ name: 'loyalty_referral', value: code }],
+    });
+    const run = {
+      client: clientOf([[friendOrder]]),
+      ledger: deps.ledger,
+      settings: deps.settings,
+      referrals: deps.referrals,
+    };
+    await reconcileShop(SHOP, new Date(0), run);
+    expect(await deps.ledger.balance(SHOP, advocate)).toBe(200);
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(160); // 60 earned + 100 welcome
+
+    // The overlap window re-reads the same order every hour; it must not
+    // re-pay. Both reward appends are keyed per order.
+    await reconcileShop(SHOP, new Date(0), run);
+    expect(await deps.ledger.balance(SHOP, advocate)).toBe(200);
+    expect(await deps.ledger.balance(SHOP, CUSTOMER)).toBe(160);
+  });
+
+  it('a healed order and a delivered one leave the same ledger', async () => {
+    const attributes = [
+      { name: 'loyalty_discount', value: '2.00' },
+      { name: 'loyalty_attempt', value: '99999999-8888-7777-6666-555555555555' },
+    ];
+    // Delivered: the webhook path runs earn + clawback.
+    const viaWebhook = makeDeps();
+    await processWebhook(
+      {
+        topic: 'orders/paid',
+        shopDomain: SHOP,
+        webhookId: 'w-1',
+        rawBody: JSON.stringify(
+          paidOrder({
+            id: 4001,
+            total_price: '50.00',
+            source_name: 'web',
+            note_attributes: attributes,
+          }),
+        ),
+      },
+      viaWebhook,
+    );
+    // Dropped: only the sweep ever sees it.
+    const viaRecon = makeDeps();
+    await reconcileShop(SHOP, new Date(0), {
+      client: clientOf([
+        [order({ id: 'gid://shopify/Order/4001', totalPrice: '50.00', sourceName: 'web', attributes })],
+      ]),
+      ledger: viaRecon.ledger,
+      settings: viaRecon.settings,
+      referrals: viaRecon.referrals,
+    });
+    expect(await viaRecon.ledger.balance(SHOP, CUSTOMER)).toBe(
+      await viaWebhook.ledger.balance(SHOP, CUSTOMER),
+    );
+  });
+});

@@ -1,5 +1,11 @@
 import { orderPaidKey, refundKey, type LedgerStore } from '@loyalty/ledger';
-import { computeOrderEarn, reverseOrderRefund } from './earn-policy.js';
+import {
+  computeOrderEarn,
+  enforceLoyaltyAttempt,
+  processReferral,
+  reverseOrderRefund,
+  type OrderAttributes,
+} from './earn-policy.js';
 import type { ReferralStore } from './referrals.js';
 import type { SettingsStore } from './settings.js';
 
@@ -30,6 +36,12 @@ export interface ReconOrder {
   customerId?: string;
   /** totalPriceSet.shopMoney.amount */
   totalPrice: string;
+  /**
+   * Order.customAttributes — the same values the webhook reads from
+   * note_attributes. Without these the sweep cannot run the clawback or pay
+   * a referral, so a dropped webhook silently lost both.
+   */
+  attributes?: OrderAttributes;
   refunds: Array<{
     /** gid://shopify/Refund/... */
     id: string;
@@ -70,6 +82,7 @@ export async function reconcileShop(
     ledger: LedgerStore;
     settings: SettingsStore;
     referrals: ReferralStore;
+    log?: ((msg: string, extra?: Record<string, unknown>) => void) | undefined;
   },
   now: () => Date = () => new Date(),
 ): Promise<ReconciliationResult> {
@@ -105,6 +118,35 @@ export async function reconcileShop(
           const { inserted } = await deps.ledger.append({ ...draft, reason: 'reconciliation' });
           if (inserted) earnsAdded += 1;
         }
+
+        // A dropped webhook must not cost the shop the REST of the handler.
+        // Healing only the earn used to leave two gaps that both move real
+        // money: the forged-discount clawback (the authoritative guard behind
+        // the checkout Function) never ran, and a referral advocate was never
+        // paid — and since the sweep only ever looked at earns, nothing would
+        // have paid them later either. Both steps are idempotent per order,
+        // so running them on every overlapping sweep is free.
+        if (policy.kind === 'earn') {
+          await processReferral({
+            ledger: deps.ledger,
+            referrals: deps.referrals,
+            settings,
+            shopDomain,
+            orderId: order.id,
+            customerId: order.customerId,
+            attributes: order.attributes ?? [],
+            ...(deps.log ? { log: deps.log } : {}),
+          });
+        }
+        await enforceLoyaltyAttempt({
+          ledger: deps.ledger,
+          shopDomain,
+          orderId: order.id,
+          customerId: order.customerId,
+          attributes: order.attributes ?? [],
+          redemptionRate: settings.redemptionRate,
+          ...(deps.log ? { log: deps.log } : {}),
+        });
       }
 
       for (const refund of order.refunds) {

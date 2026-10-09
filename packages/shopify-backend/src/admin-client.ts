@@ -30,6 +30,13 @@ const RECON_QUERY = /* GraphQL */ `
             amount
           }
         }
+        # The webhook's note_attributes under their Admin API name. The
+        # reconciliation sweep runs the same clawback and referral steps the
+        # webhook does, and cannot do either without these.
+        customAttributes {
+          key
+          value
+        }
         refunds(first: 50) {
           id
           totalRefundedSet {
@@ -58,6 +65,7 @@ interface ReconQueryResponse {
         displayFinancialStatus: string | null;
         customer: { id: string } | null;
         totalPriceSet: { shopMoney: { amount: string } };
+        customAttributes: Array<{ key: string; value: string | null }>;
         refunds: Array<{ id: string; totalRefundedSet: { shopMoney: { amount: string } } }>;
       }>;
     };
@@ -112,6 +120,10 @@ export class GraphqlAdminOrdersClient implements AdminOrdersClient {
       financialStatus: n.displayFinancialStatus,
       ...(n.customer ? { customerId: n.customer.id } : {}),
       totalPrice: n.totalPriceSet.shopMoney.amount,
+      attributes: (n.customAttributes ?? []).map((a) => ({
+        name: a.key,
+        ...(a.value !== null ? { value: a.value } : {}),
+      })),
       refunds: n.refunds.map((r) => ({
         id: r.id,
         totalRefunded: r.totalRefundedSet.shopMoney.amount,

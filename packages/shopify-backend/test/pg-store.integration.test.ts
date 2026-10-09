@@ -221,6 +221,97 @@ describe.skipIf(process.env['SKIP_PG_TESTS'] === '1')('PgLedgerStore (Postgres)'
     expect(loaded.referral).toEqual({ enabled: true, advocatePoints: 300, friendPoints: 150 });
   });
 
+  /**
+   * Paging bugs live in SQL, not in the reference store: an OFFSET-based
+   * export duplicates or drops rows when a write lands mid-export, and that
+   * is exactly the kind of error an audit file hides. These run on their own
+   * shop so the counts are exact.
+   */
+  describe('entryPage and streamEntries', () => {
+    const PAGE_SHOP = `page-test-${randomUUID()}.myshopify.com`;
+    const TOTAL = 4_500;
+
+    beforeAll(async () => {
+      // Distinct created_at values are not guaranteed by now() inside a tight
+      // loop, so the keyset has to tie-break on id — which is the point.
+      const values: string[] = [];
+      const params: unknown[] = [PAGE_SHOP];
+      for (let i = 0; i < TOTAL; i++) {
+        const base = params.length;
+        params.push(
+          CUSTOMER,
+          i % 4 === 0 ? 'pos' : 'web',
+          i % 7 === 0 ? 'redeem' : 'earn',
+          i % 7 === 0 ? -1 : 1,
+          `page:${i}`,
+        );
+        values.push(
+          `($1, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5})`,
+        );
+      }
+      await db.query(
+        `insert into points_ledger_entry
+           (shop_domain, customer_id, source_name, reason, delta, idempotency_key)
+         values ${values.join(',')}`,
+        params,
+      );
+    });
+
+    it('returns the newest window oldest-first with a shop-wide total', async () => {
+      const page = await store.entryPage(PAGE_SHOP, {}, 100);
+      expect(page.total).toBe(TOTAL);
+      expect(page.entries).toHaveLength(100);
+      const times = page.entries.map((e) => e.createdAt.getTime());
+      expect(times).toEqual([...times].sort((a, b) => a - b));
+    });
+
+    it('counts the filter, not the page', async () => {
+      const earns = await store.entryPage(PAGE_SHOP, { reason: 'earn' }, 10);
+      const redeems = await store.entryPage(PAGE_SHOP, { reason: 'redeem' }, 10);
+      const pos = await store.entryPage(PAGE_SHOP, { channel: 'pos' }, 10);
+      expect(earns.entries).toHaveLength(10);
+      expect(earns.total + redeems.total).toBe(TOTAL);
+      expect(redeems.total).toBe(Math.ceil(TOTAL / 7));
+      expect(pos.total).toBe(Math.ceil(TOTAL / 4));
+      expect(earns.entries.every((e) => e.reason === 'earn')).toBe(true);
+      expect(pos.entries.every((e) => e.sourceName === 'pos')).toBe(true);
+    });
+
+    it('streams every row exactly once, across batch boundaries', async () => {
+      const seen: string[] = [];
+      let batches = 0;
+      for await (const batch of store.streamEntries(PAGE_SHOP, {}, 500)) {
+        batches++;
+        for (const e of batch) seen.push(e.id);
+      }
+      expect(seen).toHaveLength(TOTAL);
+      expect(new Set(seen).size).toBe(TOTAL);
+      expect(batches).toBe(Math.ceil(TOTAL / 500));
+    });
+
+    it('a batch size that exactly divides the total terminates', async () => {
+      let count = 0;
+      for await (const batch of store.streamEntries(PAGE_SHOP, {}, TOTAL)) count += batch.length;
+      expect(count).toBe(TOTAL);
+    });
+
+    it('streams a filter completely and agrees with the page total', async () => {
+      const { total } = await store.entryPage(PAGE_SHOP, { reason: 'redeem' }, 1);
+      let streamed = 0;
+      for await (const batch of store.streamEntries(PAGE_SHOP, { reason: 'redeem' }, 97)) {
+        expect(batch.every((e) => e.reason === 'redeem')).toBe(true);
+        streamed += batch.length;
+      }
+      expect(streamed).toBe(total);
+    });
+
+    it('a shop with nothing to export streams no batches at all', async () => {
+      let batches = 0;
+      for await (const _ of store.streamEntries('empty.myshopify.com', {})) batches++;
+      expect(batches).toBe(0);
+    });
+  });
+
   it('settings round-trip and customer redaction', async () => {
     const settings = new PgSettingsStore(db);
     await settings.upsert(SHOP, { earnRate: '2.5', minRedemption: 50 });

@@ -420,6 +420,71 @@ describe('GET /api/entries', () => {
     const all = await app.request(await authed('/entries'));
     expect(((await all.json()) as { entries: unknown[] }).entries).toHaveLength(5);
   });
+
+  /**
+   * The bug this replaced: the admin loaded a recent window, filtered it in
+   * the browser, and labelled the result against the shop-wide entry count —
+   * telling a merchant with 54,090 earns that "50 of 71,363 entries match".
+   * `total` has to count every matching row, not the page.
+   */
+  it('counts every matching entry, not just the page it returns', async () => {
+    const { app, deps } = makeApp();
+    for (let i = 1; i <= 30; i++) {
+      await deps.ledger.append({
+        shopDomain: SHOP,
+        customerId: CUSTOMER,
+        orderId: `gid://shopify/Order/${i}`,
+        sourceName: i % 3 === 0 ? 'pos' : 'web',
+        delta: 10,
+        reason: 'earn',
+        idempotencyKey: `order_paid:${i}`,
+      });
+    }
+    const res = await app.request(await authed('/entries?reason=earn&limit=5'));
+    const body = (await res.json()) as { entries: unknown[]; total: number; limit: number };
+    expect(body.entries).toHaveLength(5);
+    expect(body.total).toBe(30);
+    expect(body.limit).toBe(5);
+
+    const pos = await app.request(await authed('/entries?channel=pos&limit=2'));
+    const posBody = (await pos.json()) as { entries: unknown[]; total: number };
+    expect(posBody.entries).toHaveLength(2);
+    expect(posBody.total).toBe(10);
+  });
+
+  it('narrows by customer, reason, and channel together', async () => {
+    const { app, deps } = makeApp();
+    const other = 'gid://shopify/Customer/99';
+    for (const [customerId, sourceName, reason, key] of [
+      [CUSTOMER, 'pos', 'earn', 'a'],
+      [CUSTOMER, 'web', 'earn', 'b'],
+      [CUSTOMER, 'pos', 'redeem', 'c'],
+      [other, 'pos', 'earn', 'd'],
+    ] as const) {
+      await deps.ledger.append({
+        shopDomain: SHOP,
+        customerId,
+        sourceName,
+        delta: reason === 'redeem' ? -5 : 5,
+        reason,
+        idempotencyKey: key,
+      });
+    }
+    const res = await app.request(
+      await authed(`/entries?customerId=${encodeURIComponent(CUSTOMER)}&reason=earn&channel=pos`),
+    );
+    const body = (await res.json()) as { entries: Array<{ idempotencyKey: string }>; total: number };
+    expect(body.total).toBe(1);
+    expect(body.entries.map((e) => e.idempotencyKey)).toEqual(['a']);
+  });
+
+  it('refuses a filter it does not recognise instead of answering the whole ledger', async () => {
+    const { app } = makeApp();
+    for (const query of ['reason=nonsense', 'channel=carrier-pigeon', 'customerId=42']) {
+      const res = await app.request(await authed(`/entries?${query}`));
+      expect(res.status, query).toBe(400);
+    }
+  });
 });
 
 describe('GET /api/overview', () => {
@@ -530,6 +595,50 @@ describe('settings and export', () => {
     expect(header).toBe('id,customer_id,order_id,refund_id,source_name,delta,reason,created_at');
     expect(row).toContain('gid://shopify/Customer/42');
     expect(row).toContain('earn');
+  });
+
+  /**
+   * The bug this replaced: /ledger.csv passed no limit, so the store's
+   * 10,000-row default silently truncated the export — a merchant with 71,363
+   * entries downloaded 10,000 of them and nothing said so. The export is the
+   * audit artifact and the `customers/data_request` answer; partial is worse
+   * than missing, because it reads as authoritative.
+   */
+  it('exports every matching row, past any former row cap', async () => {
+    const { app, deps } = makeApp();
+    const COUNT = 10_500;
+    for (let i = 1; i <= COUNT; i++) {
+      await deps.ledger.append({
+        shopDomain: SHOP,
+        customerId: CUSTOMER,
+        orderId: `gid://shopify/Order/${i}`,
+        sourceName: i % 2 === 0 ? 'pos' : 'web',
+        delta: 1,
+        reason: i % 5 === 0 ? 'adjustment' : 'earn',
+        idempotencyKey: `k:${i}`,
+      });
+    }
+    const res = await app.request(await authed('/ledger.csv'));
+    const rows = (await res.text()).trim().split('\n').slice(1);
+    expect(rows).toHaveLength(COUNT);
+
+    // A filtered export is complete for its filter, and the count agrees with
+    // what /entries reports for the same filter — one question, one answer.
+    const filtered = await app.request(await authed('/ledger.csv?reason=earn&channel=pos'));
+    const filteredRows = (await filtered.text()).trim().split('\n').slice(1);
+    for (const row of filteredRows) {
+      const cols = row.split(',');
+      expect([cols[4], cols[6]]).toEqual(['pos', 'earn']);
+    }
+    const page = await app.request(await authed('/entries?reason=earn&channel=pos&limit=1'));
+    const { total } = (await page.json()) as { total: number };
+    expect(filteredRows).toHaveLength(total);
+  });
+
+  it('refuses an unrecognised export filter rather than exporting everything', async () => {
+    const { app } = makeApp();
+    const res = await app.request(await authed('/ledger.csv?reason=everything'));
+    expect(res.status).toBe(400);
   });
 });
 

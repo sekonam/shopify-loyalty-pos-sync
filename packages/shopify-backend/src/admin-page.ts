@@ -284,6 +284,10 @@ const PAGE_SIZE = 25;
 // The dashboard loads a recent window rather than the whole ledger; the true
 // total comes from the overview, so the table can say what it is showing.
 const LEDGER_WINDOW = 500;
+// A looked-up customer gets a far deeper window than the shop feed: support
+// questions are answered by reading one person's whole history, and the
+// endpoint's own ceiling is 10,000.
+const CUSTOMER_WINDOW = 10000;
 
 const $ = (id) => document.getElementById(id);
 const nf = new Intl.NumberFormat();
@@ -303,7 +307,15 @@ function money(amount, currency) {
   return value.toFixed(2);
 }
 let state = {
-  entries: [], shown: PAGE_SIZE, shopDomain: null, currency: null, settings: null,
+  // entries: the loaded window for the CURRENT filter, newest-first. total:
+  // how many entries match that filter across the whole shop, counted in the
+  // database. Those are different numbers whenever the ledger is bigger than
+  // the window, and saying so is the difference between "50 of 71,363 entries
+  // match" (false) and "54,090 match, showing the most recent 500".
+  entries: [], total: 0, shown: PAGE_SIZE, shopDomain: null, currency: null, settings: null,
+  // The newest few entries regardless of filter — the Overview's activity
+  // feed, which must not shift when someone narrows the Ledger tab.
+  recent: [],
   totalEntries: 0, lookup: null, outstanding: 0, entriesLoaded: false,
   // customerId -> { displayName, email }. Resolved from Shopify at read time
   // and never stored: names are Shopify's record, not this app's.
@@ -989,7 +1001,7 @@ $('applyAwards').onclick = async () => {
     awardBatchId = null;
     renderAwardPreview();
   }
-  loadEntries(); refreshOverview();
+  loadEntries(); loadRecent(); refreshOverview();
 };
 
 /* ---------- customer names ----------
@@ -1037,10 +1049,12 @@ async function resolveNames(customerIds) {
 }
 /** Names for the rows currently drawn, then one re-render with them in. */
 async function fillVisibleNames() {
-  const rows = state.lookup ? state.entries : filtered();
   // The overview's Recent activity draws the newest six regardless of the
   // ledger filters, so those ids are asked for too.
-  const ids = rows.slice(0, state.shown).concat(state.entries.slice(0, 6)).map((e) => e.customerId);
+  const ids = state.entries
+    .slice(0, state.shown)
+    .concat(state.recent.slice(0, 6))
+    .map((e) => e.customerId);
   if (await resolveNames(ids)) renderEntries();
 }
 
@@ -1069,12 +1083,21 @@ function customerCell(customerId) {
   };
   return button;
 }
-function filtered() {
-  const reason = $('filter-reason').value;
-  const channel = $('filter-channel').value;
-  return state.entries.filter((e) =>
-    (!reason || e.reason === reason) && (!channel || e.sourceName === channel)
-  );
+/**
+ * The filter the table, its count, and the CSV export all speak in. Built
+ * once, here, so the file a merchant downloads answers the same question the
+ * screen does — the export used to be assembled from a different predicate
+ * than the count beside it.
+ */
+function entryQuery() {
+  const params = new URLSearchParams();
+  if (state.lookup) params.set('customerId', state.lookup.customerId);
+  if ($('filter-reason').value) params.set('reason', $('filter-reason').value);
+  if ($('filter-channel').value) params.set('channel', $('filter-channel').value);
+  return params;
+}
+function hasFilter() {
+  return Boolean($('filter-reason').value || $('filter-channel').value);
 }
 function entryRow(e) {
   const tr = el('tr');
@@ -1125,55 +1148,58 @@ function renderEntries() {
     $('ledger-count').textContent = '';
     return;
   }
-  const rows = filtered();
+  // Already narrowed by the server, so the loaded window IS the match set.
+  const rows = state.entries;
   const tbody = document.querySelector('#entries tbody');
   tbody.textContent = '';
   for (const e of rows.slice(0, state.shown)) tbody.appendChild(entryRow(e));
   $('entries-empty').hidden = rows.length > 0;
   document.querySelector('#entries thead').hidden = rows.length === 0;
   // A shop with no entries at all is a new install, not a failed search.
-  const fresh = state.entries.length === 0 && !state.lookup;
+  const fresh = state.totalEntries === 0 && !state.lookup;
   $('entries-empty-title').textContent = fresh ? 'No points activity yet' : 'Nothing matches';
   $('entries-empty-body').textContent = fresh
     ? 'Every earn, redemption, and refund reversal will be listed here as it happens.'
     : state.lookup
-      ? 'This customer has ' + nf.format(state.entries.length) + ' entries, but none of them match the reason and channel filters above.'
+      ? 'This customer has no entries matching the reason and channel filters above.'
       : 'Try a different reason or channel.';
   $('loadMore').hidden = rows.length <= state.shown;
   $('shown-count').textContent = rows.length
     ? 'Showing ' + Math.min(state.shown, rows.length) + ' of ' + nf.format(rows.length)
     : '';
-  const total = Math.max(state.totalEntries, state.entries.length);
+
   const lookedUp = state.lookup ? nameFor(state.lookup.customerId) : undefined;
   const who = state.lookup
     ? lookedUp
       ? lookedUp.displayName
       : 'customer ' + state.lookup.raw
     : '';
-  $('ledger-count').textContent = state.lookup
-    // A reason or channel filter left over from before the lookup narrows the
-    // table silently. Saying "every entry" over a table hiding most of them —
-    // or, with nothing matching, over an empty one — is simply untrue.
-    ? rows.length !== state.entries.length
-      ? nf.format(rows.length) + ' of ' + nf.format(state.entries.length) + ' entries for ' + who + ' match the filters, newest first.'
-      : 'Every entry for ' + who + ', newest first.'
-    : fresh
-      ? 'Nothing recorded yet.'
-      : rows.length !== state.entries.length
-        ? nf.format(rows.length) + ' of ' + nf.format(total) + ' entries match, newest first.'
-        : total > state.entries.length
-          ? nf.format(total) + ' entries. Showing the most recent ' + nf.format(state.entries.length) + ', newest first.'
-          : nf.format(total) + ' entries, newest first.';
+  // state.total is counted in the database over every matching row; rows is
+  // the window actually loaded. Whenever they differ the sentence has to say
+  // which number is which, or the merchant reads a window as a total.
+  const windowed = state.total > rows.length;
+  const subject = state.lookup ? ' for ' + who : '';
+  const matching = hasFilter() ? ' match the filters' : '';
+  $('ledger-count').textContent = fresh
+    ? 'Nothing recorded yet.'
+    : state.total === 0
+      ? 'No entries' + subject + matching + '.'
+      : windowed
+        ? nf.format(state.total) + ' entries' + subject + matching +
+          '. Showing the most recent ' + nf.format(rows.length) + ', newest first.'
+        : hasFilter() || !state.lookup
+          ? nf.format(state.total) + ' entries' + subject + matching + ', newest first.'
+          : 'Every entry for ' + who + ', newest first.';
 
   const recent = document.querySelector('#recent tbody');
   recent.textContent = '';
-  for (const e of state.entries.slice(0, 6)) recent.appendChild(entryRow(e));
-  $('recent-empty').hidden = state.entries.length > 0;
-  document.querySelector('#recent thead').hidden = state.entries.length === 0;
+  for (const e of state.recent.slice(0, 6)) recent.appendChild(entryRow(e));
+  $('recent-empty').hidden = state.recent.length > 0;
+  document.querySelector('#recent thead').hidden = state.recent.length === 0;
   $('recent-empty').querySelector('.empty-title').textContent = 'No points activity yet';
 }
 for (const id of ['filter-reason', 'filter-channel']) {
-  $(id).addEventListener('input', () => { state.shown = PAGE_SIZE; renderEntries(); void fillVisibleNames(); });
+  $(id).addEventListener('input', () => { void reloadForFilter(); });
 }
 
 /* ---------- customer lookup ---------- */
@@ -1260,15 +1286,19 @@ async function lookupById(raw) {
   try {
     const [balance, entries] = await Promise.all([
       readJson('/api/balance?customerId=' + q),
-      readJson('/api/entries?customerId=' + q),
+      // Authoritative for this customer: their whole history, not the recent
+      // shop window. The server's total is the count of record — the array is
+      // a window, and a customer with more entries than it must never be told
+      // they have only as many as happened to load.
+      readJson('/api/entries?customerId=' + q + '&limit=' + CUSTOMER_WINDOW),
     ]);
-    // Authoritative for this customer: their whole history, not the recent window.
     state.entries = entries.entries.slice().reverse();
+    state.total = entries.total;
     state.entriesLoaded = true;
     state.lookup = { customerId, raw };
     state.shown = PAGE_SIZE;
     await resolveNames([customerId]);
-    renderLookup(balance, entries.entries.length);
+    renderLookup(balance, entries.total);
     renderEntries();
     $('lookup-clear').hidden = false;
   } catch (err) {
@@ -1357,18 +1387,15 @@ $('lookup-clear').onclick = async () => {
   $('lookup-id').value = '';
   $('lookup-result').textContent = '';
   $('lookup-clear').hidden = true;
-  state.shown = PAGE_SIZE;
   await loadEntries();
 };
 $('loadMore').onclick = () => { state.shown += PAGE_SIZE; renderEntries(); void fillVisibleNames(); };
 
 $('export').onclick = async () => {
-  // Export exactly what is on screen, filters and lookup included.
-  const params = new URLSearchParams();
-  if (state.lookup) params.set('customerId', state.lookup.customerId);
-  if ($('filter-reason').value) params.set('reason', $('filter-reason').value);
-  if ($('filter-channel').value) params.set('channel', $('filter-channel').value);
-  const query = params.toString();
+  // Exactly the question the table is answering — same builder, so the file
+  // and the count above it cannot be describing different row sets. The
+  // export carries no limit: it is complete for this filter.
+  const query = entryQuery().toString();
   busy($('export'), true, 'Preparing…');
   try {
     const res = await authed('/api/ledger.csv' + (query ? '?' + query : ''));
@@ -1399,14 +1426,48 @@ $('export').onclick = async () => {
 };
 
 /* ---------- load ---------- */
+/**
+ * Loads the ledger window for whatever filter is currently set, from the
+ * server. Filtering used to happen in the browser over an already-loaded
+ * window, which is why a narrow filter could only ever find matches inside
+ * the most recent 500 entries while being labelled against the whole shop.
+ */
+// Monotonic, so a slow answer to an abandoned filter can never overwrite the
+// table the merchant is now looking at.
+let entriesRun = 0;
 async function loadEntries() {
-  const { entries } = await readJson('/api/entries?limit=' + LEDGER_WINDOW);
-  state.entries = entries.slice().reverse();
+  const run = ++entriesRun;
+  const params = entryQuery();
+  // One customer's whole history is what support questions are answered from;
+  // the shop-wide feed only needs a recent window.
+  params.set('limit', String(state.lookup ? CUSTOMER_WINDOW : LEDGER_WINDOW));
+  const page = await readJson('/api/entries?' + params);
+  if (run !== entriesRun) return;
+  state.entries = page.entries.slice().reverse();
+  state.total = page.total;
   state.entriesLoaded = true;
-  state.lookup = null;
-  $('lookup-clear').hidden = true;
+  state.shown = PAGE_SIZE;
   renderEntries();
   await fillVisibleNames();
+}
+/** The Overview feed: newest entries, never narrowed by the Ledger filters. */
+async function loadRecent() {
+  const { entries } = await readJson('/api/entries?limit=6');
+  state.recent = entries.slice().reverse();
+  renderEntries();
+  await fillVisibleNames();
+}
+/**
+ * A filter change is now a server read, so unlike the old client-side filter
+ * it can fail — and failing silently would leave the previous filter's rows
+ * under the new filter's label.
+ */
+async function reloadForFilter() {
+  try {
+    await loadEntries();
+  } catch (err) {
+    toast('Could not apply that filter. Try again.', 'critical');
+  }
 }
 async function refreshOverview() {
   const overview = await readJson('/api/overview');
@@ -1419,16 +1480,17 @@ async function load() {
   state.loadFailed = false;
   // Settled, not all: the three reads are independent, and losing the ledger
   // is no reason to blank the Program tab the merchant came to edit.
-  const [settings, overview, entries] = await Promise.allSettled([
+  const [settings, overview, entries, recent] = await Promise.allSettled([
     readJson('/api/settings'),
     refreshOverview(),
     loadEntries(),
+    loadRecent(),
   ]);
   if (settings.status === 'fulfilled') renderSettings(settings.value);
   // Nothing rendered the cards, so nothing has validated them either: a blank
   // card must never offer a Save that would write blanks over real settings.
   else validateAll();
-  const failures = [settings, overview, entries].filter((r) => r.status === 'rejected');
+  const failures = [settings, overview, entries, recent].filter((r) => r.status === 'rejected');
   if (failures.length > 0) {
     const err = failures[0].reason;
     const panel = $('load-error');

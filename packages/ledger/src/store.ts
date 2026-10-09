@@ -7,6 +7,7 @@ import type {
   RedemptionAttempt,
   RedemptionChannel,
   RedemptionStatus,
+  SourceName,
 } from './types.js';
 
 export interface AppendResult {
@@ -24,6 +25,19 @@ export interface LedgerStats {
   /** Points credited / debited inside the requested window. */
   issuedInWindow: number;
   redeemedInWindow: number;
+}
+
+/**
+ * Narrows the shop's ledger for the admin table and the CSV export. Every
+ * field is optional and they combine with AND; an empty filter is the whole
+ * shop. The same filter object drives the page the merchant looks at and the
+ * file they download, so the two can never disagree about what was asked.
+ */
+export interface EntryFilter {
+  customerId?: string;
+  reason?: LedgerReason;
+  /** The channel tag (`sourceName`) to narrow to. */
+  channel?: SourceName;
 }
 
 export interface RedeemRequest {
@@ -75,11 +89,35 @@ export interface LedgerStore {
     reason?: LedgerReason,
   ): Promise<PointsLedgerEntry | undefined>;
   /**
-   * The most recent `limit` entries for a shop, returned oldest-first
-   * (admin ledger view / CSV export). Recency matters more than completeness
-   * for a dashboard; the CSV asks for a limit large enough to be everything.
+   * One page of the shop's ledger for the admin table: the most recent
+   * `limit` entries MATCHING the filter, returned oldest-first, plus how many
+   * entries match in total.
+   *
+   * `total` is counted in the database over every matching row, not derived
+   * from the page. A dashboard that filters a recent window client-side and
+   * then labels the result against the shop-wide entry count tells the
+   * merchant "50 of 71,363 entries match" when the real answer is 54,090 —
+   * which, for a product whose claim is a trustworthy ledger, is the worst
+   * kind of wrong number.
    */
-  entriesForShop(shopDomain: string, limit?: number): Promise<PointsLedgerEntry[]>;
+  entryPage(
+    shopDomain: string,
+    filter: EntryFilter,
+    limit: number,
+  ): Promise<{ entries: PointsLedgerEntry[]; total: number }>;
+  /**
+   * Every entry matching the filter, oldest-first, yielded in batches.
+   *
+   * The CSV export is the merchant's audit artifact and the way they answer a
+   * `customers/data_request` — so it has to be complete. Batching keeps a
+   * full-ledger export memory-bounded instead of materialising the whole
+   * table to build one string.
+   */
+  streamEntries(
+    shopDomain: string,
+    filter: EntryFilter,
+    batchSize?: number,
+  ): AsyncIterable<PointsLedgerEntry[]>;
   /**
    * Purchase points earned since `since` (positive deltas with reason
    * 'earn'/'reconciliation') — the VIP-tier qualification basis. Spending
@@ -206,8 +244,34 @@ export class InMemoryLedgerStore implements LedgerStore {
     );
   }
 
-  async entriesForShop(shopDomain: string, limit = 10_000): Promise<PointsLedgerEntry[]> {
-    return (this.entriesByShop.get(shopDomain) ?? []).slice(-limit);
+  async entryPage(
+    shopDomain: string,
+    filter: EntryFilter,
+    limit: number,
+  ): Promise<{ entries: PointsLedgerEntry[]; total: number }> {
+    const matching = this.matching(shopDomain, filter);
+    return { entries: matching.slice(-limit), total: matching.length };
+  }
+
+  async *streamEntries(
+    shopDomain: string,
+    filter: EntryFilter,
+    batchSize = 2_000,
+  ): AsyncIterable<PointsLedgerEntry[]> {
+    const matching = this.matching(shopDomain, filter);
+    for (let i = 0; i < matching.length; i += batchSize) {
+      yield matching.slice(i, i + batchSize);
+    }
+  }
+
+  /** Oldest-first, which is the order both readers above promise. */
+  private matching(shopDomain: string, filter: EntryFilter): PointsLedgerEntry[] {
+    return (this.entriesByShop.get(shopDomain) ?? []).filter(
+      (e) =>
+        (filter.customerId === undefined || e.customerId === filter.customerId) &&
+        (filter.reason === undefined || e.reason === filter.reason) &&
+        (filter.channel === undefined || e.sourceName === filter.channel),
+    );
   }
 
   async earnedSince(shopDomain: string, customerId: string, since: Date): Promise<number> {

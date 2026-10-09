@@ -2,8 +2,12 @@ import { randomUUID } from 'node:crypto';
 import {
   redemptionDiscountAmount,
   selectTier,
+  type EntryFilter,
+  type LedgerReason,
   type LedgerStore,
+  type PointsLedgerEntry,
   type RedemptionChannel,
+  type SourceName,
   type VipTier,
 } from '@loyalty/ledger';
 import { Hono } from 'hono';
@@ -334,51 +338,58 @@ export function createApp(deps: AppDeps): Hono<Env> {
     });
   });
 
+  /**
+   * One page of the ledger, newest-window-first, plus `total` — how many
+   * entries match the filter across the WHOLE shop, not just this page. The
+   * admin needs both: the page to show, and the total to describe it
+   * truthfully when it is showing a window of something much larger.
+   */
   merchant.get('/entries', async (c) => {
-    const shopDomain = c.get('shopDomain');
-    const customerId = c.req.query('customerId');
+    const filter = parseEntryFilter(c.req.query());
+    if ('error' in filter) return c.json({ error: filter.error }, 400);
     const requested = Number(c.req.query('limit'));
-    const limit = Number.isInteger(requested)
-      ? Math.min(Math.max(requested, 1), 10_000)
-      : undefined;
-    const entries = customerId
-      ? await deps.ledger.entries(shopDomain, customerId)
-      : await deps.ledger.entriesForShop(shopDomain, limit);
-    return c.json({ entries });
+    const limit = Number.isInteger(requested) ? Math.min(Math.max(requested, 1), 10_000) : 500;
+    const page = await deps.ledger.entryPage(c.get('shopDomain'), filter.filter, limit);
+    return c.json({ entries: page.entries, total: page.total, limit });
   });
 
+  /**
+   * The ledger export, streamed and COMPLETE for the filter asked for.
+   *
+   * This file is the merchant's audit artifact and how they answer a
+   * `customers/data_request`, so a partial one is worse than none: it reads
+   * as authoritative. It is streamed in batches rather than assembled in
+   * memory because a real shop's ledger is tens of thousands of rows and
+   * growing, and the export must not get slower to the point of being
+   * quietly capped again.
+   */
   merchant.get('/ledger.csv', async (c) => {
+    const filter = parseEntryFilter(c.req.query());
+    if ('error' in filter) return c.json({ error: filter.error }, 400);
     const shopDomain = c.get('shopDomain');
-    const customerId = c.req.query('customerId');
-    const reason = c.req.query('reason');
-    const channel = c.req.query('channel');
-    const all = customerId
-      ? await deps.ledger.entries(shopDomain, customerId)
-      : await deps.ledger.entriesForShop(shopDomain);
-    // The export matches what the merchant is looking at — downloading a
-    // filtered view and getting the whole ledger is a nasty surprise at
-    // reconciliation time.
-    const entries = all.filter(
-      (e) => (!reason || e.reason === reason) && (!channel || e.sourceName === channel),
-    );
-    const header = 'id,customer_id,order_id,refund_id,source_name,delta,reason,created_at';
-    const lines = entries.map((e) =>
-      [
-        e.id,
-        e.customerId,
-        e.orderId ?? '',
-        e.refundId ?? '',
-        e.sourceName,
-        e.delta,
-        e.reason,
-        e.createdAt.toISOString(),
-      ]
-        .map(csvCell)
-        .join(','),
-    );
-    return c.text([header, ...lines].join('\n'), 200, {
+    const batches = deps.ledger.streamEntries(shopDomain, filter.filter);
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const encoder = new TextEncoder();
+        controller.enqueue(encoder.encode(CSV_HEADER + '\n'));
+        try {
+          for await (const batch of batches) {
+            controller.enqueue(encoder.encode(batch.map(csvRow).join('\n') + '\n'));
+          }
+          controller.close();
+        } catch (err) {
+          // A mid-stream failure has already sent a 200 and some rows, so the
+          // only honest signal left is to break the download rather than let
+          // it land looking complete.
+          deps.log?.('ledger csv export failed mid-stream', { shopDomain, error: String(err) });
+          controller.error(err);
+        }
+      },
+    });
+    return c.body(body, 200, {
       'content-type': 'text/csv; charset=utf-8',
       'content-disposition': 'attachment; filename="points-ledger.csv"',
+      'cache-control': 'no-store',
     });
   });
 
@@ -608,6 +619,67 @@ function parseSettingsPatch(body: Record<string, unknown>): { patch: SettingsPat
 function csvCell(value: string | number): string {
   const s = String(value);
   return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+}
+
+export const CSV_HEADER = 'id,customer_id,order_id,refund_id,source_name,delta,reason,created_at';
+
+function csvRow(e: PointsLedgerEntry): string {
+  return [
+    e.id,
+    e.customerId,
+    e.orderId ?? '',
+    e.refundId ?? '',
+    e.sourceName,
+    e.delta,
+    e.reason,
+    e.createdAt.toISOString(),
+  ]
+    .map(csvCell)
+    .join(',');
+}
+
+const LEDGER_REASONS: readonly LedgerReason[] = [
+  'earn',
+  'redeem',
+  'refund_reversal',
+  'adjustment',
+  'reconciliation',
+  'referral_reward',
+];
+const LEDGER_CHANNELS: readonly SourceName[] = ['web', 'pos', 'mobile_app', 'system', 'other'];
+
+/**
+ * Parses the admin's filter query into an EntryFilter, rejecting anything it
+ * doesn't recognise. Silently ignoring an unknown reason would answer a
+ * narrow question with the whole ledger and call it a match — the same class
+ * of untrue number this endpoint exists to stop.
+ */
+function parseEntryFilter(
+  query: Record<string, string>,
+): { filter: EntryFilter } | { error: string } {
+  const filter: EntryFilter = {};
+  const customerId = query['customerId'];
+  if (customerId) {
+    if (!customerGidPattern.test(customerId) && !customerId.startsWith('redacted:')) {
+      return { error: 'customerId must be a customer gid' };
+    }
+    filter.customerId = customerId;
+  }
+  const reason = query['reason'];
+  if (reason) {
+    if (!LEDGER_REASONS.includes(reason as LedgerReason)) {
+      return { error: `unknown reason '${reason}'` };
+    }
+    filter.reason = reason as LedgerReason;
+  }
+  const channel = query['channel'];
+  if (channel) {
+    if (!LEDGER_CHANNELS.includes(channel as SourceName)) {
+      return { error: `unknown channel '${channel}'` };
+    }
+    filter.channel = channel as SourceName;
+  }
+  return { filter };
 }
 
 function isPositiveDecimal(s: string): boolean {

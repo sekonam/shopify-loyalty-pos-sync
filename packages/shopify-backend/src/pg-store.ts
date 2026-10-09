@@ -1,5 +1,6 @@
 import type {
   AppendResult,
+  EntryFilter,
   LedgerEntryDraft,
   LedgerStats,
   LedgerStore,
@@ -225,18 +226,67 @@ export class PgLedgerStore implements LedgerStore {
     };
   }
 
-  async entriesForShop(shopDomain: string, limit = 10_000): Promise<PointsLedgerEntry[]> {
-    const { rows } = await this.db.query(
-      `select * from (
-         select * from points_ledger_entry
-          where shop_domain = $1
-          order by created_at desc, id desc
-          limit $2
-       ) recent
-       order by created_at, id`,
-      [shopDomain, limit],
-    );
-    return rows.map(rowToEntry);
+  async entryPage(
+    shopDomain: string,
+    filter: EntryFilter,
+    limit: number,
+  ): Promise<{ entries: PointsLedgerEntry[]; total: number }> {
+    const { where, params } = entryWhere(shopDomain, filter);
+    // One round trip: the page and the count of everything that matches it.
+    // They have to come from the same predicate or the admin's "N of M match"
+    // is comparing two different questions.
+    const [page, count] = await Promise.all([
+      this.db.query(
+        `select * from (
+           select * from points_ledger_entry
+            where ${where}
+            order by created_at desc, id desc
+            limit $${params.length + 1}
+         ) recent
+         order by created_at, id`,
+        [...params, limit],
+      ),
+      this.db.query(`select count(*)::int as total from points_ledger_entry where ${where}`, params),
+    ]);
+    return { entries: page.rows.map(rowToEntry), total: count.rows[0].total as number };
+  }
+
+  async *streamEntries(
+    shopDomain: string,
+    filter: EntryFilter,
+    batchSize = 2_000,
+  ): AsyncIterable<PointsLedgerEntry[]> {
+    const { where, params } = entryWhere(shopDomain, filter);
+    // Keyset pagination on the same (created_at, id) pair the rows are ordered
+    // by. OFFSET would re-scan everything it already skipped, and a row
+    // inserted mid-export would shift the window and duplicate or drop a row —
+    // in an audit export, silently.
+    //
+    // The cursor travels as TEXT, not as the Date the driver hands back:
+    // Postgres keeps microseconds and a JS Date only milliseconds, so a
+    // round-tripped timestamp lands slightly BEFORE the row it came from and
+    // the same batch is served forever. Rows sharing one `now()` — every row
+    // written by a single statement — make that an immediate infinite loop.
+    let cursor: { createdAt: string; id: string } | undefined;
+    for (;;) {
+      const keyset =
+        cursor === undefined
+          ? ''
+          : `and (created_at, id) > ($${params.length + 1}::timestamptz, $${params.length + 2}::uuid)`;
+      const cursorParams = cursor === undefined ? [] : [cursor.createdAt, cursor.id];
+      const { rows } = await this.db.query(
+        `select *, created_at::text as cursor_ts from points_ledger_entry
+          where ${where} ${keyset}
+          order by created_at, id
+          limit $${params.length + cursorParams.length + 1}`,
+        [...params, ...cursorParams, batchSize],
+      );
+      if (rows.length === 0) return;
+      yield rows.map(rowToEntry);
+      if (rows.length < batchSize) return;
+      const last = rows[rows.length - 1];
+      cursor = { createdAt: last.cursor_ts as string, id: last.id as string };
+    }
   }
 
   private async lockCustomer(
@@ -318,6 +368,29 @@ export class PgLedgerStore implements LedgerStore {
       balance,
     };
   }
+}
+
+/**
+ * The one place an EntryFilter becomes SQL. The admin's page, its total, and
+ * its CSV export all build their query from this, so "what the merchant is
+ * looking at" and "what they downloaded" cannot drift apart.
+ */
+function entryWhere(
+  shopDomain: string,
+  filter: EntryFilter,
+): { where: string; params: unknown[] } {
+  const clauses = ['shop_domain = $1'];
+  const params: unknown[] = [shopDomain];
+  for (const [column, value] of [
+    ['customer_id', filter.customerId],
+    ['reason', filter.reason],
+    ['source_name', filter.channel],
+  ] as const) {
+    if (value === undefined) continue;
+    params.push(value);
+    clauses.push(`${column} = $${params.length}`);
+  }
+  return { where: clauses.join(' and '), params };
 }
 
 function rowToEntry(row: Record<string, unknown>): PointsLedgerEntry {
